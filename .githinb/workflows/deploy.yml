@@ -1,0 +1,65 @@
+name: deploy-book
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+# This job installs dependencies, builds the book, and pushes it to `gh-pages`
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+  
+    #   - name: Build the JupyterLite site
+    #     run: |
+    #       python -m pip install -r requirements_jupyterlite.txt
+    #       mkdir -p ./content
+    #       cp README.md content
+    #       cp ./src/*.ipynb ./content/
+    #       cp -r src/images/ content/
+    #       cp -r src/wrc_rallydj/ content/
+    #       jupyter lite build --contents content --output-dir dist
+    #       touch ./dist/.nojekyll
+  
+    #   - name: Build the Quarto Book site
+    #     run: |
+    #       ARCH=$(uname -m) && if [ \"$ARCH\" = \"aarch64\" ] || [ \"$ARCH\" = \"arm64\" ]; then QUARTO_ARCH=\"arm64\"; else QUARTO_ARCH=\"amd64\"; fi && wget \"https://github.com/quarto-dev/quarto-cli/releases/download/v1.6.40/quarto-1.6.40-linux-${QUARTO_ARCH}.tar.gz\" && tar -C ~/opt -xvzf \"quarto-1.6.40-linux-${QUARTO_ARCH}.tar.gz\" && quarto add r-wasm/quarto-live
+    #       python -m pip install -r requirements_book.txt
+
+
+      - name: Build shinylive site
+        run: |
+          python -m pip install -r requirements_shiny.txt
+          mkdir -p ./dist
+          shinylive export src/shinyapp ./dist
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dist
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+        
