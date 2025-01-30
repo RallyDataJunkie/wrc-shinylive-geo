@@ -4,6 +4,7 @@ from shapely.geometry import Point, LineString
 from ipyleaflet import Map, Marker, GeoData, GeoJSON, Popup, DivIcon
 from ipywidgets import HTML
 
+
 class RallyGeoTools:
     def __init__(self):
         pass
@@ -31,7 +32,7 @@ class RallyGeoTools:
         retcols = ["name", "stages", "start", "finish", "geometry"]
         retcols = [c for c in retcols if c in _gdf.columns]
         return _gdf[retcols]
-
+    
     @staticmethod
     def get_gdf_from_lat_lon_df(df, lat="latitude", lon="longitude", crs="EPSG:4326"):
         # Create a GeoDataFrame

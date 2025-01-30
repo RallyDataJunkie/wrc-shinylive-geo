@@ -188,6 +188,11 @@ class WRCDataAPIClient:
 
     def get_rallies_data(self, year=None, alldata=None, as_dict=False):
         """Get rally data as dataframe."""
+        # If we provide a year for the rallies, assume this is the year we are using
+        if year is not None:
+            self.year = year
+        else:
+            year = self.year
         df_rallies = pd.DataFrame()
         if alldata is None:
             alldata = self.alldata if self.alldata else self.get_base_data(retval=True)
