@@ -13,6 +13,8 @@ import json
 import gzip
 import base64
 
+# TO DO - maybe see what we can learn from
+# https://webapps2.wrc.com/2020/obc/js/wrc/api.js
 
 class WRCDataAPIClient:
     """Client for accessing Dakar Rally API data."""
