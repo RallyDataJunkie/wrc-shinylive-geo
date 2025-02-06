@@ -6,6 +6,7 @@ from datetime import timedelta
 import pandas as pd
 from io import StringIO
 import kml2geojson
+from typing import Dict, Any
 
 from time import sleep
 import random
@@ -16,28 +17,42 @@ import base64
 # TO DO - maybe see what we can learn from
 # https://webapps2.wrc.com/2020/obc/js/wrc/api.js
 
+
 class WRCDataAPIClient:
     """Client for accessing Dakar Rally API data."""
 
     WRC_DATA_API_BASE = "https://webappsdata.wrc.com/srv/wrc/json/api/wrcsrv/{query}"
 
     WRC_KML_PATH = "https://webapps2.wrc.com/2020/web/live/kml/{kmlfile}.xml"
-
+    CATEGORY_MAP = {
+            "ALL": "all",
+            "WRC": "wrc",
+            "WRC2": "wrc2",
+            "WRC3": "wrc3"
+        }
     def __init__(self, year: int = datetime.date.today().year, usegeo: bool = False):
         """
         Initialize the WRC Data API client.
         """
         if usegeo:
             from .geotools import RallyGeoTools
+
             self.GeoTools = RallyGeoTools()
         else:
             self.GeoTools = None
 
         self.year = year
+        self.eventId = None
+        self.rallyId = None
         # Simple requests session
         # TO DO - we could use a proxy here
         self.r = CachedSession("demo_cache", expire_after=timedelta(hours=1))
         self.alldata = {}
+
+    def initialise(self, year=None):
+        """Initialise with the calendar."""
+        if year:
+            self.year = year
 
     def kmlfile_to_json(self, kmlfile):
         kmlurl = self.WRC_KML_PATH.format(kmlfile=kmlfile)
@@ -47,7 +62,7 @@ class WRCDataAPIClient:
     def read_kmlfile(self, kmlfile):
         def _simpleStageList(stages):
             if stages.startswith("SS"):
-                stages = [f"SS{s}" for s in stages.split(" ")[-1].split("/")] 
+                stages = [f"SS{s}" for s in stages.split(" ")[-1].split("/")]
             else:
                 stages = [stages]
             return stages
@@ -58,7 +73,7 @@ class WRCDataAPIClient:
             feature["properties"]["stages"] = _simpleStageList(stage)
 
         if self.GeoTools:
-            _gdf =  self.GeoTools.geojson_to_gpd(gj)
+            _gdf = self.GeoTools.geojson_to_gpd(gj)
             return _gdf
         return gj
 
@@ -109,12 +124,21 @@ class WRCDataAPIClient:
         else:
             return d
 
-    def get_rally_attribute(self, df_rallies, rally, year=None, attr="rosterid"):
-        year = year if year else self.year
-        return df_rallies.loc[
-            (df_rallies["year"] == str(year)) & (df_rallies["name"].str.contains(rally)),
+    def get_rally_attribute(self, df_rallies, rallyid=None, rallyname=None, year=None, attr="rosterid"):
+        if rallyid is not None or (rallyid is None and rallyname is None):
+            rallyid = rallyid if rallyid else self.rallyId
+            _rally_df = df_rallies.loc[
+                df_rallies["sas-rallyid"] == rallyid,
+                attr,
+            ]
+        elif rallyname:
+            year = year if year else self.year
+            _rally_df = df_rallies.loc[
+            (df_rallies["year"] == str(year))
+            & (df_rallies["name"].str.contains(rallyname)),
             attr,
-        ].values[0]
+        ]
+        return _rally_df.values[0]
 
     def _df_from_record(self, rd):
         """Get dataframe from base record dict."""
@@ -147,6 +171,47 @@ class WRCDataAPIClient:
         if retval:
             return alldata
 
+    def _wrc_events_to_df(self, data: Dict[str, Any]) -> pd.DataFrame:
+        """
+        Convert WRC event JSON data to a pandas DataFrame using existing processing methods.
+
+        Args:
+            data: Dictionary containing WRC season/event data
+
+        Returns:
+            DataFrame with all events and their metadata
+        """
+        all_events = []
+
+        for year, year_data in data.items():
+            # Parse year data
+            year_record = self.record_parse(year_data)
+            year_df = self._df_from_record(year_record)
+
+            # Process each event in the year
+            for event in year_data["_dchildren"]:
+                # Parse event data
+                event_record = self.record_parse(event)
+                event_df = self._df_from_record(event_record)
+
+                # Add year information
+                event_df["year"] = year
+                if "_meta" in year_df:
+                    event_df["category"] = year_df["_meta"].get("category", "")
+
+                all_events.append(event_df)
+
+        # Combine all events into single DataFrame
+        result_df = pd.concat(all_events, axis=0)
+
+        # Convert date columns to datetime if they exist
+        date_cols = ["date-start", "date-finish"]
+        # for col in result_df.columns:
+        #    if any(date_col in col for date_col in date_cols):
+        #        result_df[col] = pd.to_datetime(result_df[col])
+
+        return result_df
+
     def get_seasons(self, typ="WRC"):
         """Get season data."""
         q = "byType?t=%22Season%22&maxdepth=2"
@@ -163,8 +228,10 @@ class WRCDataAPIClient:
                 seasons[event["category"]] = {event["name"]: s}
             else:
                 seasons[event["category"]][event["name"]] = s
+        # The seasons data
         # return { s['name']:s for s in seasondata }
-        return seasons[typ]
+        # return seasons[typ]
+        return self._wrc_events_to_df(seasons[typ])
 
     def get_poilist_data(self, poilist, as_gdf=True):
         """Get poi list data."""
@@ -214,17 +281,23 @@ class WRCDataAPIClient:
             return df_rallies[df_rallies["year"] == year].to_dict(orient="records")
         return df_rallies
 
-    def get_rally_id(self, df_rallies, rally, year=None):
+    def get_rally_by_name(self, df_rallies, rally, year=None):
         year = year if year else self.year
         return df_rallies[
             (df_rallies["year"] == str(year)) & (df_rallies["name"] == rally)
         ].index.values[0]
 
+    def get_rally_by_rallyid(self, df_rallies, rallyid=None):
+        rallyid = rallyid if rallyid else self.rallyId
+        return df_rallies[
+            df_rallies["sas-rallyid"] == rallyid
+        ].index.values[0]
+
     # + tags=["active-ipynb"]
-    # get_rally_id(df_rallies, YEAR, rally=_sample_rally_name)
+    # get_rally_by_name(df_rallies, YEAR, rally=_sample_rally_name)
     # -
 
-    def _process_roster_data(self, rosterdata, _rosterID):  # , _rallyID):
+    def _process_roster_data(self, rosterdata, _rosterID, category):  # , _rallyID):
 
         def _concat_df(_df, _carID, record):
             _df_tmp = self._df_from_record(record)
@@ -267,6 +340,8 @@ class WRCDataAPIClient:
                 if "codriver" not in _df_car or not _df_car["codriver"].iloc[0]:
                     _df_car["codriver"] = _codriver["name"]
                     # print('Patched codriver {}'.format(_codriver['name']))
+                if category and category != "all":
+                    _df_car = _df_car[_df_car["category"] == category.upper()]
                 df_car = pd.concat([df_car, _df_car], sort=False)
 
                 if _driver["type"] == "Driver":
@@ -284,7 +359,10 @@ class WRCDataAPIClient:
                 else:
                     print("oops... wrong type: {}".format(_driver["type"]))
                 if _team["type"] == "Team":
+                    _team["_meta"]["_rosterentryID"] = _rosterentryID
                     df_team = _concat_df(df_team, _carID, _team)
+                    if category and category!="all":
+                        df_team = df_team[df_team["category"] == category.upper()]
                     # _df_team = _df_from_record(_team)
                     # _df_team['_carID']=_carID
                     # df_team = pd.concat([df_team, _df_team ])
@@ -305,6 +383,23 @@ class WRCDataAPIClient:
     """
         # df_rosterEntry['_rallies_rosterid'] = _rosterID
         # df_rosterEntry['_rallies_rallyid'] = _rallyID
+        df_rosterEntry.reset_index(inplace=True)
+        df_rosterEntry.rename(
+            columns={"filename": "driverCode", "index": "_rosterentryID"}, inplace=True
+        )
+
+        df_car = pd.merge(
+            df_car,
+            df_rosterEntry[["_rosterentryID", "driverCode"]],
+            on="_rosterentryID",
+         )
+
+        df_car = pd.merge(
+            df_car,
+            df_team[["_rosterentryID", "seasonname"]],
+            on="_rosterentryID",
+        )
+
         return (
             df_rosterEntry.dropna(how="all", axis=1)
             .dropna(how="all", axis=0)
@@ -330,25 +425,35 @@ class WRCDataAPIClient:
         rosterdata = self.r.get(stub_roster.format(_rosterID), verify=False).json()
         return rosterdata
 
-    def get_roster_data(self, df_rallies, rally, year=None):
+    def get_roster_data(self, df_rallies, rallyid=None, rallyname=None, year=None):
         """Get roster data for specific rally."""
-        year = year if year else self.year
-        _rosterID = df_rallies[
-            (df_rallies["year"] == str(year)) & (df_rallies["name"] == rally)
-        ]["rosterid"][0]
+        if rallyid is not None or (rallyid is None and rallyname is None):
+            rallyid = rallyid if rallyid else self.rallyId
+            _rosterID = df_rallies[df_rallies["sas-rallyid"]==rallyid]["rosterid"].iloc[0]
+        elif rallyname:
+            year = year if year else self.year
+            _rosterID = df_rallies[
+                (df_rallies["year"] == str(year)) & (df_rallies["name"] == rallyname)
+            ]["rosterid"].iloc[0]
+        else:
+            return {}
 
         return self._get_roster_data(_rosterID)
 
-    def process_roster_data(self, df_rallies, rally, year=None):
+    def process_roster_data(self, df_rallies, rallyid=None, rallyname=None, year=None, category="WRC"):
         year = year if year else self.year
         year = str(year)
-        rosterdata = self.get_roster_data(df_rallies, rally, year)
-        _rosterID = self.get_rally_attribute(df_rallies, rally, year, attr="rosterid")
-        return self._process_roster_data(rosterdata, _rosterID)
+        rosterdata = self.get_roster_data(df_rallies, rallyid, rallyname, year)
+        _rosterID = self.get_rally_attribute(df_rallies, rallyid, rallyname, year, attr="rosterid")
+        return self._process_roster_data(rosterdata, _rosterID, category)
 
-    def _get_rally_data(self, df_rallies, rally, year=None, stub_rally=None):
+    def _get_rally_data(self, df_rallies, rallyid=None, rallyname=None, year=None, stub_rally=None):
         year = year if year else self.year
-        _rallyID = self.get_rally_id(df_rallies, rally, year)
+        if rallyid or not rallyname:
+            rallyid = rallyid if rallyid else self.rallyId
+            _rallyID = self.get_rally_by_rallyid(df_rallies, rallyid)
+        elif rallyname:
+            _rallyID = self.get_rally_by_name(df_rallies, rallyname, year)
         if stub_rally is None:
             stub_rally = "https://webappsdata.wrc.com/srv/wrc/json/api/wrcsrv/byId?id=%22{}%22&maxdepth=2"
         rallydata = self.r.get(stub_rally.format(_rallyID), verify=False).json()
@@ -361,16 +466,27 @@ class WRCDataAPIClient:
             df_rallydata = pd.concat([df_rallydata, _df_rallydata], sort=False)
 
         df_rallydata["_rallies_rallyid"] = _rallyID
-        return df_rallydata.dropna(how="all", axis=1).dropna(how="all", axis=0).drop_duplicates()
+        return (
+            df_rallydata.dropna(how="all", axis=1)
+            .dropna(how="all", axis=0)
+            .drop_duplicates()
+        )
 
-    def process_rally_data(self, df_rallies, rally, year=None):
-        year = year if year else self.year
-        _rallyID, rallydata = self._get_rally_data(df_rallies, rally, year)
+    def process_rally_data(self, df_rallies, rallyid=None, rallyname=None, year=None):
+        if rallyid or (not rallyid and not rallyname):
+            rallyid = rallyid if rallyid else self.rallyId
+            _rallyID, rallydata = self._get_rally_data(df_rallies, rallyid)
+        elif rallyname:
+            year = year if year else self.year
+            _rallyID, rallydata = self._get_rally_data(df_rallies, rallyname=rallyname, year=year)
         _df_rallydata = self._process_rally_data(rallydata, _rallyID)
         return _df_rallydata
 
     def get_stage_id(self, df_rallydata, name="SS1"):
-        return df_rallydata[(df_rallydata["name"] == name)].index.values[0]
+        if not df_rallydata.empty and "name" in df_rallydata.columns:
+            _result =  df_rallydata[(df_rallydata["name"] == name)]
+            if not _result.empty:
+                return _result.index.values[0]
 
     # + tags=["active-ipynb"]
     # get_stage_id(df_rallydata, name='SS1')
@@ -385,10 +501,13 @@ class WRCDataAPIClient:
         return _stageID, stagedata
 
     def _process_stage_data(self, stagedata, _stageID):  # , _rallyID):
+        if not stagedata:
+            return
         df_stagedata = pd.DataFrame()
-        for r in stagedata["_dchildren"]:
-            _df_stagedata = self._df_from_record(self.record_parse(r))
-            df_stagedata = pd.concat([df_stagedata, _df_stagedata], sort=False)
+        if "_dchildren" in stagedata:
+            for r in stagedata["_dchildren"]:
+                _df_stagedata = self._df_from_record(self.record_parse(r))
+                df_stagedata = pd.concat([df_stagedata, _df_stagedata], sort=False)
 
         df_stagedata["_rally_stageid"] = _stageID  # same as first part of index
         df_stagedata["_carentryid"] = [x.split("_")[1] for x in df_stagedata.index]
@@ -408,15 +527,15 @@ class WRCDataAPIClient:
 
     def get_telemetry_id(self, df_stagedata, name="Neuville"):
         if "telemetry" in df_stagedata.columns:
-            _tel_id = df_stagedata[(df_stagedata["_record_name"] == name)]["telemetry"].values[
-            0
-        ]
+            _tel_id = df_stagedata[(df_stagedata["_record_name"] == name)][
+                "telemetry"
+            ].values[0]
         else:
             _tel_id = None
         if "telemetry_merged" in df_stagedata.columns:
             _merged_tel_id = df_stagedata[(df_stagedata["_record_name"] == name)][
-            "telemetry_merged"
-        ].values[0]
+                "telemetry_merged"
+            ].values[0]
         else:
             _merged_tel_id = None
         _car_entry_id = df_stagedata[(df_stagedata["_record_name"] == name)][
@@ -436,15 +555,16 @@ class WRCDataAPIClient:
 
     # Note that the telemetry does not appear to include hybrid status
     def _get_telemetry_data(self, df_stagedata, name="Neuville", stub_telemetry=None):
-        print("going in")
-        _rally_stage_id, _car_entry_id, _telemetryID, _telemetrymergedID = self.get_telemetry_id(
-            df_stagedata, name
+        print("Checking telemetry...")
+        _rally_stage_id, _car_entry_id, _telemetryID, _telemetrymergedID = (
+            self.get_telemetry_id(df_stagedata, name)
         )
-        print(_rally_stage_id, _car_entry_id, _telemetryID, _telemetrymergedID)
+        print("_rally_stage_id, _car_entry_id, _telemetryID, _telemetrymergedID")
         if stub_telemetry is None:
             stub_telemetry = "https://webappsdata.wrc.com/srv/fs/pull{}"
             # print(stub_telemetry.format(_telemetryID))
         telemetrydata = self.r.get(stub_telemetry.format(_telemetryID), verify=False)
+
         if telemetrydata.text:
             try:
                 telemetrydata = telemetrydata.json()
@@ -496,7 +616,6 @@ class WRCDataAPIClient:
             telemetrydata,
             telemetrymergeddata,
         ) = self._get_telemetry_data(df_stagedata, name)
-
         if telemetrydata is not None:
             df_telemetrydata = self._process_driver_telemetry_data(telemetrydata)
             df_telemetrydata["_rally_stageid"] = _rally_stage_id
@@ -507,7 +626,9 @@ class WRCDataAPIClient:
             df_telemetrydata = pd.DataFrame()
 
         if telemetrymergeddata is not None:
-            df_telemetrymergeddata = self._process_driver_telemetry_data(telemetrymergeddata)
+            df_telemetrymergeddata = self._process_driver_telemetry_data(
+                telemetrymergeddata
+            )
             df_telemetrymergeddata["_rally_stageid"] = _rally_stage_id
             df_telemetrymergeddata["_carentryid"] = _car_entry_id
             df_telemetrymergeddata["_telemetrymergedID"] = _telemetrymergedID
@@ -515,4 +636,11 @@ class WRCDataAPIClient:
         else:
             df_telemetrymergeddata = pd.DataFrame()
 
-        return df_telemetrydata.dropna(how="all", axis=1).dropna(how="all", axis=0).drop_duplicates(), df_telemetrymergeddata.dropna(how="all", axis=1).dropna(how="all", axis=0).drop_duplicates()
+        return (
+            df_telemetrydata.dropna(how="all", axis=1)
+            .dropna(how="all", axis=0)
+            .drop_duplicates(),
+            df_telemetrymergeddata.dropna(how="all", axis=1)
+            .dropna(how="all", axis=0)
+            .drop_duplicates(),
+        )
