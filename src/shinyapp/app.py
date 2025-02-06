@@ -1,8 +1,9 @@
 from wrcapi_rallydj.data_api import WRCDataAPIClient
 from shiny.express import ui, input
 from shiny import render, reactive
+from shinywidgets import render_widget
 
-wrcapi = WRCDataAPIClient()
+wrcapi = WRCDataAPIClient(usegeo=True)
 
 
 ui.panel_title("RallyDataJunkie WRC API Data Browser", "WRC-RallyDJ")
@@ -46,6 +47,22 @@ def rally_id_var():
 
 
 @reactive.calc
+@reactive.event(input.season, input.event)
+def rally_geodata():
+    kmlstub = rally_data()["kmlfile"].iloc[0]
+    geostages = wrcapi.read_kmlfile(kmlstub)
+    return geostages
+
+
+@reactive.calc
+@reactive.event(input.season, input.event)
+def rally_data():
+    season_df = season_data()
+    rallydata = wrcapi.process_rally_data(season_df, rally_id_var())
+    return rallydata
+
+
+@reactive.calc
 @reactive.event(input.season)
 def season_data():
     wrcapi.initialise(year=int(input.season()))
@@ -66,9 +83,7 @@ def update_events_select():
 @reactive.effect
 @reactive.event(input.season, input.event)
 def update_stages_select():
-    season_df = season_data()
-    rallydata = wrcapi.process_rally_data(season_df, rally_id_var())
-    print(rallydata.columns)
+    rallydata = rally_data()
     stages = rallydata["name"].to_list()
     ui.update_select("stage", choices=stages)
 
@@ -102,8 +117,7 @@ with ui.accordion(open=False):
                 @render.data_frame
                 @reactive.event(input.event)
                 def rallies_display():
-                    season_df = season_data()
-                    rallydata = wrcapi.process_rally_data(season_df, rally_id_var())
+                    rallydata = rally_data()
                     displayCols = ["date", "name", "location", "distance", "firstCar"]
                     return render.DataGrid(rallydata[displayCols])
 
@@ -124,15 +138,54 @@ with ui.accordion(open=False):
             #             if c in df_car.columns
             #         ]
             #         return render.DataGrid(df_car[displayCols])
+        with ui.accordion(open=False):
+            with ui.accordion_panel("Stages map"):
+
+                @render_widget
+                @reactive.event(input.season)
+                def allstages_map():
+                    geostages = rally_geodata()
+                    m = wrcapi.GeoTools.simple_stage_map(geostages)
+                    return m
 
 with ui.accordion(open=False):
     with ui.accordion_panel("Stage info"):
+        with ui.accordion(open=False):
+            with ui.accordion_panel("DRIVER INFO TO MOVE"):
 
-        @render.data_frame
-        @reactive.event(input.event, input.stage)
-        def stage_display():
-            stage = input.stage()
-            season_df = season_data()
-            rallydata = wrcapi.process_rally_data(season_df, rally_id_var())
-            _out = wrcapi.process_stage_data(rallydata, name=stage)
-            return render.DataGrid(_out)
+                @render.data_frame
+                @reactive.event(input.event, input.stage)
+                def stage_display():
+                    stage = input.stage()
+                    season_df = season_data()
+                    rallydata = wrcapi.process_rally_data(season_df, rally_id_var())
+                    _out = wrcapi.process_stage_data(rallydata, name=stage)
+                    if _out.empty:
+                        return
+                    displaycols = [
+                        c
+                        for c in ["_record_name", "time", "racetime", "position"]
+                        if c in _out.columns
+                    ]
+                    # TO DO - the cateogry mapping to WRC is incorrect in provided data?
+                    # e.g. we also get WRC2 cars
+                    return render.DataGrid(_out[displaycols])
+
+        # TO DO:
+        # - map with all stages view;
+        # - map with single stage view
+        # - stage route analyses (there is no code ported over for this yet)
+        #   consider doing a live version of https://github.com/RallyDataJunkie/visualising-rally-stages
+        # - move the driver / roster stuff etc out to a telemetry app,
+        #   and just keep this app purely focussed on matters relating to the stage
+
+        with ui.accordion(open=False):
+            with ui.accordion_panel("Stage map"):
+
+                @render_widget
+                @reactive.event(input.season, input.stage)
+                def single_stage_map():
+                    geostages = rally_geodata()
+                    m = wrcapi.GeoTools.simple_stage_map(geostages, input.stage())
+                    return m
+

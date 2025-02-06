@@ -27,12 +27,39 @@ class RallyGeoTools:
         return [[min(y), min(x)], [max(y), max(x)]]
 
     def geojson_to_gpd(self, gj, crs="EPSG:4326"):
+
+        def expand_hyphenated_stages(stages_list):
+            """
+            Expands stages with hyphens (e.g., 'SS5-8' to ['SS5', 'SS8']) while preserving
+            non-hyphenated stages.
+            
+            Args:
+                stages_list (list): List of stage identifiers
+                
+            Returns:
+                list: Expanded list with hyphenated stages split into separate elements
+            """
+            result = []
+
+            for stage in stages_list:
+                if '-' in stage:
+                    # Extract the prefix (SS) and the numbers
+                    prefix = stage[:stage.find('0')] if '0' in stage else 'SS'
+                    start, end = map(int, stage[len(prefix):].split('-'))
+                    # Add start and end stages with proper prefix
+                    result.extend([f"{prefix}{start}", f"{prefix}{end}"])
+                else:
+                    result.append(stage)
+
+            return result
+
         _gdf = gpd.GeoDataFrame.from_features(gj["features"], crs=crs)
         _gdf = self.add_start_end_coords(_gdf)
         retcols = ["name", "stages", "start", "finish", "geometry"]
         retcols = [c for c in retcols if c in _gdf.columns]
+        _gdf["stages"] = _gdf["stages"].apply(expand_hyphenated_stages)
         return _gdf[retcols]
-    
+
     @staticmethod
     def get_gdf_from_lat_lon_df(df, lat="latitude", lon="longitude", crs="EPSG:4326"):
         # Create a GeoDataFrame
@@ -67,7 +94,7 @@ class RallyGeoTools:
                 stages_gdf["stages"].apply(lambda x: bool(set(x) & stages))
             ]
         # The centroid calc prefers a different projection
-        #crs = stages_gdf.crs
+        # crs = stages_gdf.crs
         # centroid = stages_gdf.to_crs("+proj=cea").centroid.to_crs(crs).iloc[0]
         # Get the total bounding box of all geometries
         minx, miny, maxx, maxy = (
