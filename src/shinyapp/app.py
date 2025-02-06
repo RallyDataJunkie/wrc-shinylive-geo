@@ -29,6 +29,22 @@ with ui.sidebar(open="desktop"):
     #     selected="wrc",
     # )
 
+    # Create stages selector
+    ui.input_select(
+        "stage",
+        "Stage:",
+        {},
+    )
+
+
+@reactive.calc
+@reactive.event(input.event)
+def rally_id_var():
+    rally_id = input.event()
+    wrcapi.rallyId = rally_id
+    return wrcapi.rallyId
+
+
 @reactive.calc
 @reactive.event(input.season)
 def season_data():
@@ -37,15 +53,25 @@ def season_data():
     season = wrcapi.get_rallies_data()
     return season
 
+
 @reactive.effect
 @reactive.event(input.season)
 def update_events_select():
     season = season_data()
     # events = season["EventName"].to_list()
-    events = (
-        season[["sas-rallyid", "name"]].set_index("sas-rallyid")["name"].to_dict()
-    )
+    events = season[["sas-rallyid", "name"]].set_index("sas-rallyid")["name"].to_dict()
     ui.update_select("event", choices=events)
+
+
+@reactive.effect
+@reactive.event(input.season, input.event)
+def update_stages_select():
+    season_df = season_data()
+    rallydata = wrcapi.process_rally_data(season_df, rally_id_var())
+    print(rallydata.columns)
+    stages = rallydata["name"].to_list()
+    ui.update_select("stage", choices=stages)
+
 
 with ui.accordion(open=False):
     with ui.accordion_panel("Season info"):
@@ -59,24 +85,26 @@ with ui.accordion(open=False):
                 "date-start",
                 "date-finish",
                 "info-based",
-                "info-surface"
+                "info-surface",
             ]
             return render.DataGrid(season[retcols])
 
+
 # Card pattern, no tooltip
-#with ui.card(class_="mt-3"):
+# with ui.card(class_="mt-3"):
 #    ui.card_header("Card title")
 
 with ui.accordion(open=False):
     with ui.accordion_panel("Event info"):
         with ui.accordion(open=False):
             with ui.accordion_panel("Stages overview"):
+
                 @render.data_frame
                 @reactive.event(input.event)
                 def rallies_display():
                     season_df = season_data()
-                    rallydata = wrcapi.process_rally_data(season_df, input.event())
-                    displayCols = ["date", "name", "location", "distance",  "firstCar"]
+                    rallydata = wrcapi.process_rally_data(season_df, rally_id_var())
+                    displayCols = ["date", "name", "location", "distance", "firstCar"]
                     return render.DataGrid(rallydata[displayCols])
 
             ## Roster info seems to be a bit flaky?
@@ -96,3 +124,15 @@ with ui.accordion(open=False):
             #             if c in df_car.columns
             #         ]
             #         return render.DataGrid(df_car[displayCols])
+
+with ui.accordion(open=False):
+    with ui.accordion_panel("Stage info"):
+
+        @render.data_frame
+        @reactive.event(input.event, input.stage)
+        def stage_display():
+            stage = input.stage()
+            season_df = season_data()
+            rallydata = wrcapi.process_rally_data(season_df, rally_id_var())
+            _out = wrcapi.process_stage_data(rallydata, name=stage)
+            return render.DataGrid(_out)
