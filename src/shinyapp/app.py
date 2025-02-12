@@ -164,26 +164,26 @@ with ui.accordion(open=False):
 
 with ui.accordion(open=False):
     with ui.accordion_panel("Stage info"):
-        with ui.accordion(open=False):
-            with ui.accordion_panel("DRIVER INFO TO MOVE"):
+        # with ui.accordion(open=False):
+        #     with ui.accordion_panel("DRIVER INFO TO MOVE"):
 
-                @render.data_frame
-                @reactive.event(input.event, input.stage)
-                def stage_display():
-                    stage = input.stage()
-                    season_df = season_data()
-                    rallydata = wrcapi.process_rally_data(season_df, rally_id_var())
-                    _out = wrcapi.process_stage_data(rallydata, name=stage)
-                    if _out.empty:
-                        return
-                    displaycols = [
-                        c
-                        for c in ["_record_name", "time", "racetime", "position"]
-                        if c in _out.columns
-                    ]
-                    # TO DO - the cateogry mapping to WRC is incorrect in provided data?
-                    # e.g. we also get WRC2 cars
-                    return render.DataGrid(_out[displaycols])
+        #         @render.data_frame
+        #         @reactive.event(input.event, input.stage)
+        #         def stage_display():
+        #             stage = input.stage()
+        #             season_df = season_data()
+        #             rallydata = wrcapi.process_rally_data(season_df, rally_id_var())
+        #             _out = wrcapi.process_stage_data(rallydata, name=stage)
+        #             if _out.empty:
+        #                 return
+        #             displaycols = [
+        #                 c
+        #                 for c in ["_record_name", "time", "racetime", "position"]
+        #                 if c in _out.columns
+        #             ]
+        #             # TO DO - the cateogry mapping to WRC is incorrect in provided data?
+        #             # e.g. we also get WRC2 cars
+        #             return render.DataGrid(_out[displaycols])
 
         # TO DO:
         # - map with all stages view;
