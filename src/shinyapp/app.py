@@ -49,10 +49,12 @@ def rally_id_var():
 @reactive.calc
 @reactive.event(input.season, input.event)
 def rally_geodata():
-    kmlstub = rally_data()["kmlfile"].iloc[0]
+    kmlstub = season_rally_data()["kmlfile"].iloc[0]
     geostages = wrcapi.read_kmlfile(kmlstub)
     return geostages
-
+# TO DO - the stage view is based on stages from the rally data
+# which may not exist before the event starts
+# Instead, we could pull the tracks from the kml file
 
 @reactive.calc
 @reactive.event(input.season, input.event)
@@ -70,22 +72,33 @@ def season_data():
     season = wrcapi.get_rallies_data()
     return season
 
+# Get season_rally_data which is filtered season data
+@reactive.calc
+@reactive.event(input.event)
+def season_rally_data():
+    season = season_data()
+    season_filtered = season[season["sas-rallyid"] == input.event()]
+    return season_filtered
 
 @reactive.effect
 @reactive.event(input.season)
 def update_events_select():
     season = season_data()
+    print(season)
     # events = season["EventName"].to_list()
     events = season[["sas-rallyid", "name"]].set_index("sas-rallyid")["name"].to_dict()
     ui.update_select("event", choices=events)
 
 
 @reactive.effect
-@reactive.event(input.season, input.event)
+@reactive.event(input.event)
 def update_stages_select():
     rallydata = rally_data()
-    stages = rallydata["name"].to_list()
-    ui.update_select("stage", choices=stages)
+    if rallydata.empty:
+        ui.update_select("stage", choices={})
+    else:
+        stages = rallydata["name"].to_list()
+        ui.update_select("stage", choices=stages)
 
 
 with ui.accordion(open=False):
@@ -148,6 +161,7 @@ with ui.accordion(open=False):
                     m = wrcapi.GeoTools.simple_stage_map(geostages)
                     return m
 
+
 with ui.accordion(open=False):
     with ui.accordion_panel("Stage info"):
         with ui.accordion(open=False):
@@ -188,4 +202,3 @@ with ui.accordion(open=False):
                     geostages = rally_geodata()
                     m = wrcapi.GeoTools.simple_stage_map(geostages, input.stage())
                     return m
-
