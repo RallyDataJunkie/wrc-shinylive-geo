@@ -1,8 +1,13 @@
 import geopandas as gpd
 
 from shapely.geometry import Point, LineString
-from ipyleaflet import Map, Marker, GeoData, GeoJSON, Popup, DivIcon
+from ipyleaflet import Map, Marker, GeoData, GeoJSON, Popup, DivIcon, Polyline
 from ipywidgets import HTML
+
+import json
+import requests # TO DO support corsproxy?
+
+import shapely
 
 
 class RallyGeoTools:
@@ -84,7 +89,7 @@ class RallyGeoTools:
         return gdf
 
     @staticmethod
-    def simple_stage_map(stages_gdf, stages=None, poi_gdf=None, zoom=9):
+    def simple_stage_map(stages_gdf, stages=None, poi_gdf=None, zoom=9, buffer_percentage=0.05):
         # TO DO - we need to handle/ignore duplicate stage routes
         if stages is not None:
             stages = {stages} if isinstance(stages, str) else set(stages)
@@ -98,7 +103,6 @@ class RallyGeoTools:
         minx, miny, maxx, maxy = (
             stages_gdf.total_bounds
         )  # total_bounds returns (minx, miny, maxx, maxy)
-        buffer_percentage = 0.05  # Adjust as needed
         x_buffer = (maxx - minx) * buffer_percentage
         y_buffer = (maxy - miny) * buffer_percentage
 
@@ -150,7 +154,7 @@ class RallyGeoTools:
         return LineString(dfg["geometry"].tolist())
 
     @staticmethod
-    def cut_line_by_distance_meters(line, start_meters, end_meters):
+    def cut_line_by_distance_meters(line, start_meters, end_meters=None):
         """
         Cut a LineString between two distances measured in meters.
 
@@ -181,6 +185,9 @@ class RallyGeoTools:
 
         # Project to UTM for accurate measurements
         line_utm = gdf.to_crs(utm_crs).geometry.iloc[0]
+
+        if end_meters is None:
+            end_meters = line_utm.length
 
         # Validate distances
         if (
@@ -240,3 +247,331 @@ class RallyGeoTools:
         )
 
         return result
+
+    # Via Claude
+    def route_elevations(self, route_input, mode="elevations"):
+        """
+        Retrieve and process elevation data with flexible output modes
+        
+        Usage:
+
+            routes_gdf.loc[index, 'geometry'] = route_elevations(routes_gdf.iloc[index], mode='augmented')
+
+            routes_gdf['geometry'] = routes_gdf.apply(
+                lambda row: route_elevations(row, mode='augmented'), 
+                axis=1
+            )
+
+        Parameters:
+        route_input: Can be GeoPandas row, Shapely Geometry, GeoJSON dict/string
+        mode: Output mode - 'elevations', 'coords', 'augmented'
+        
+        Returns:
+        Depends on mode:
+        - 'elevations': List of elevation values
+        - 'coords': List of [lon, lat, elevation] tuples
+        - 'augmented': Augmented input (geometry/GeoJSON with elevation)
+        """
+        def extract_coordinates(input_route):
+            # Robust coordinate extraction
+            def get_base_coords(geometry):
+                # Handle different geometry types and coordinate dimensions
+                if geometry.geom_type == 'LineString':
+                    coords = list(geometry.coords)
+                elif geometry.geom_type == 'MultiLineString':
+                    # Take first linestring if multiple exist
+                    coords = list(geometry[0].coords)
+                else:
+                    raise ValueError(f"Unsupported geometry type: {geometry.geom_type}")
+
+                # Truncate to 2D coordinates (lon, lat)
+                return [coord[:2] for coord in coords]
+
+            # GeoPandas row
+            if hasattr(input_route, 'geometry'):
+                geometry = input_route.geometry
+                coords = get_base_coords(geometry)
+            # Shapely geometry
+            elif hasattr(input_route, 'geom_type'):
+                geometry = input_route
+                coords = get_base_coords(geometry)
+            # GeoJSON dictionary
+            elif isinstance(input_route, dict):
+                # Check for FeatureCollection or Feature
+                if input_route.get('type') == 'FeatureCollection':
+                    geometry = shapely.from_geojson(json.dumps(input_route['features'][0]))
+                    coords = get_base_coords(geometry)
+                elif input_route.get('type') == 'Feature':
+                    geometry = shapely.from_geojson(json.dumps(input_route))
+                    coords = get_base_coords(geometry)
+                elif input_route.get('type') == 'LineString':
+                    # Extract coordinates, truncating to 2D
+                    coords = [coord[:2] for coord in input_route['coordinates']]
+                else:
+                    raise ValueError(f"Unsupported GeoJSON type: {input_route.get('type')}")
+            # GeoJSON string
+            elif isinstance(input_route, str):
+                try:
+                    geojson = json.loads(input_route)
+                    return extract_coordinates(geojson)
+                except json.JSONDecodeError:
+                    raise ValueError("Invalid GeoJSON string")
+            else:
+                raise ValueError(f"Unsupported input type: {type(input_route)}")
+
+            return coords, geometry
+
+        # Validate mode
+        valid_modes = ['elevations', 'coords', 'augmented']
+        if mode not in valid_modes:
+            raise ValueError(f"Invalid mode. Choose from {valid_modes}")
+
+        # Extract coordinates and original geometry
+        try:
+            coordinates, original_geom = extract_coordinates(route_input)
+        except Exception as e:
+            print(f"Coordinate extraction error: {e}")
+            return None
+
+        # Prepare locations for elevation lookup
+        locations = [{"latitude": coord[1], "longitude": coord[0]} for coord in coordinates]
+
+        try:
+            # Use Open-Elevation API (free, no key required)
+            response = requests.post(
+                "https://api.open-elevation.com/api/v1/lookup", 
+                json={"locations": locations}
+            )
+            response.raise_for_status()
+            elevation_data = response.json()
+
+            # Extract elevations
+            elevations = [loc['elevation'] for loc in elevation_data['results']]
+
+            # Create augmented coordinates with elevation
+            augmented_coords = [
+                list(coord) + [elev] 
+                for coord, elev in zip(coordinates, elevations)
+            ]
+
+            # Return based on mode
+            if mode == 'elevations':
+                return elevations
+
+            if mode == 'coords':
+                return augmented_coords
+
+            # Augmented mode
+            if hasattr(route_input, 'geometry') or hasattr(route_input, 'geom_type'):
+                # For GeoPandas row or Shapely geometry, return augmented geometry
+                return LineString(augmented_coords)
+
+            # For GeoJSON, reconstruct with elevation information
+            if isinstance(route_input, dict):
+                # Preserve original GeoJSON structure
+                if route_input.get('type') == 'FeatureCollection':
+                    route_input['features'][0]['geometry']['coordinates'] = augmented_coords
+                elif route_input.get('type') == 'Feature':
+                    route_input['geometry']['coordinates'] = augmented_coords
+                elif route_input.get('type') == 'LineString':
+                    route_input['coordinates'] = augmented_coords
+
+                return route_input
+
+            # For GeoJSON string or other inputs
+            return {
+                "type": "LineString",
+                "coordinates": augmented_coords
+            }
+
+        except Exception as e:
+            print(f"Elevation retrieval error: {e}")
+            return None
+
+    # Diagnostic function to inspect coordinate dimensions
+    def inspect_coordinates(input_route):
+        """
+        Inspect the coordinates of an input route
+        
+        Parameters:
+        input_route: Input geometry or GeoJSON
+        
+        Returns:
+        Dictionary with coordinate information
+        """
+        def get_coord_info(coords):
+            return {
+                'total_coords': len(coords),
+                'first_coord_dimensions': len(coords[0]) if coords else None,
+                'coord_dimensions': [len(coord) for coord in coords[:5]]
+            }
+
+        if hasattr(input_route, 'geometry'):
+            coords = list(input_route.geometry.coords)
+        elif hasattr(input_route, 'geom_type'):
+            coords = list(input_route.coords)
+        elif isinstance(input_route, dict):
+            if input_route.get('type') == 'FeatureCollection':
+                coords = input_route['features'][0]['geometry']['coordinates']
+            elif input_route.get('type') == 'Feature':
+                coords = input_route['geometry']['coordinates']
+            elif input_route.get('type') == 'LineString':
+                coords = input_route['coordinates']
+        elif isinstance(input_route, str):
+            coords = json.loads(input_route)['coordinates']
+        else:
+            return "Unable to extract coordinates"
+
+        return get_coord_info(coords)
+
+    def swap_linestring_coords(self, linestring):
+        """Swap latitude and longitude in a Shapely LineString, preserving altitude if present."""
+        swapped_coords = []
+
+        for coord in linestring.coords:
+            if len(coord) == 3:  # (lon, lat, alt) format
+                lon, lat, alt = coord
+                swapped_coords.append((lat, lon, alt))
+            else:  # (lon, lat) format
+                lon, lat = coord
+                swapped_coords.append((lat, lon))
+
+        return LineString(swapped_coords)
+
+    def route_segment_meters(self, line, start, end=None):
+        first_segment = self.cut_line_by_distance_meters(line, 0, start)
+        highlighted_segment = self.cut_line_by_distance_meters(line, start, end)
+        if end is None:
+            segments = [first_segment, highlighted_segment]
+        else:
+            end_segment = self.cut_line_by_distance_meters(line, end)
+            segments = [first_segment, highlighted_segment, end_segment]
+
+        gdf_segments = gpd.GeoDataFrame(list(range(len(segments))), geometry=segments)
+        gdf_segments.columns = ["index", "geometry"]
+
+        return gdf_segments
+
+    def leaflet_highlight_section(self, gdf_segments, colour=None, swap_coords=False):
+        # TO DO - generalise to n sections with interleave
+        base_colour = "blue"
+        highlight_colour = "red"
+        if colour is None:
+            colour = ["blue", "red"]
+        if isinstance(colour, str):
+            if colour == base_colour:
+                base_colour = highlight_colour
+                highlight_colour = colour
+        else:
+            base_colour = colour[0]
+            highlight_colour = colour[1]
+
+        # Need to better generalise map center based on bounds TO DO
+        route_coords = (
+            list(self.swap_linestring_coords(gdf_segments.geometry.iloc[1]).coords)
+            if swap_coords
+            else list(gdf_segments.geometry.iloc[1].coords)
+        )
+        m = Map(center=route_coords[0], zoom=13)
+
+        highlighted_route = Polyline(
+            locations=route_coords,
+            color=highlight_colour,
+            fill=False,
+        )
+        m.add_layer(highlighted_route)
+
+        start_coords = (
+            list(self.swap_linestring_coords(gdf_segments.geometry.iloc[0]).coords)
+            if swap_coords
+            else list(gdf_segments.geometry.iloc[0].coords)
+        )
+        if len(gdf_segments) == 3:
+            end_coords = (
+                list(
+                    self.swap_linestring_coords(
+                        gdf_segments.geometry.iloc[2]
+                    ).coords
+                )
+                if swap_coords
+                else list(gdf_segments.geometry.iloc[2].coords)
+            )
+            segment = Polyline(
+                locations=[start_coords, end_coords],
+                color=base_colour,
+                fill=False,
+                weight=5,
+            )
+        else:
+            segment = Polyline(
+                locations=start_coords, color=base_colour, fill=False, weight=5
+            )
+        m.add_layer(segment)
+        return m
+
+    def leaflet_highlight_route(self, line, start, end=None, swap_coords=False):
+        gdf_segments = self.route_segment_meters(line, start, end)
+        m = self.leaflet_highlight_section(gdf_segments, colour=None, swap_coords=swap_coords)
+        return m
+
+    # Via claude.ai
+    def calculate_route_distance(self, gdf, row_index, lat, lon):
+        """
+        Calculate distance along a route using automatically estimated UTM CRS
+
+        Parameters:
+        -----------
+        gdf : GeoDataFrame
+            Input GeoDataFrame with latitude/longitude route
+        row_index : int
+            Index of the specific route
+        lat : float
+            Latitude of the point
+        lon : float
+            Longitude of the point
+
+        Returns:
+        --------
+        dict
+            Contains distance in meters and other relevant information
+        """
+        # Ensure CRS is set (if not already)
+        if gdf.crs is None or gdf.crs.name == "undefined":
+            gdf = gdf.set_crs("EPSG:4326")
+
+        # Create point in the same CRS as the dataframe
+        point = gpd.GeoDataFrame(geometry=[Point(lon, lat)], crs="EPSG:4326")
+
+        # Automatically estimate the best UTM CRS for the point
+        utm_crs = point.estimate_utm_crs()
+        #print(f"Estimated UTM CRS: {utm_crs}")
+
+        # Project both route and point to the estimated UTM CRS
+        projected_gdf = gdf.to_crs(utm_crs)
+        projected_point = point.to_crs(utm_crs).geometry.iloc[0]
+
+        # Get the route geometry
+        route = projected_gdf.loc[row_index, "geometry"]
+
+        # Find the nearest point on the route
+        nearest_point = route.interpolate(route.project(projected_point))
+
+        # Calculate distances
+        try:
+            # Distance along the route to the nearest point
+            distance_along_route = route.project(projected_point)
+            total_route_length = route.length
+
+            return {
+                "estimated_utm_crs": utm_crs,
+                "distance_along_route_meters": distance_along_route,
+                "total_route_length_meters": total_route_length,
+                "percent_along_route": (
+                    (distance_along_route / total_route_length) * 100
+                    if total_route_length > 0
+                    else 0
+                ),
+                "nearest_point_on_route": nearest_point,
+            }
+        except Exception as e:
+            return {"error": str(e), "latitude": lat, "longitude": lon}
