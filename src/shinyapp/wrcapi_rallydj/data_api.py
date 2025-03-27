@@ -61,8 +61,10 @@ class WRCDataAPIClient:
 
     def read_kmlfile(self, kmlfile):
         def _simpleStageList(stages):
-            if stages.startswith("SS"):
+            if stages.startswith("SS "):
                 stages = [f"SS{s}" for s in stages.split(" ")[-1].split("/")]
+            elif stages.startswith("SS"):
+                stages = [f"SS{s.replace('SS','')}" for s in stages.split(" ")[0].split("/")]
             else:
                 stages = [stages]
             return stages
