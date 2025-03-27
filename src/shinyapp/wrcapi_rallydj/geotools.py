@@ -32,20 +32,20 @@ class RallyGeoTools:
             """
             Expands stages with hyphens (e.g., 'SS5-8' to ['SS5', 'SS8']) while preserving
             non-hyphenated stages.
-            
+
             Args:
                 stages_list (list): List of stage identifiers
-                
+
             Returns:
                 list: Expanded list with hyphenated stages split into separate elements
             """
             result = []
 
             for stage in stages_list:
-                if '-' in stage:
+                if "-" in stage:
                     # Extract the prefix (SS) and the numbers
-                    prefix = stage[:stage.find('0')] if '0' in stage else 'SS'
-                    start, end = map(int, stage[len(prefix):].split('-'))
+                    prefix = stage[: stage.find("0")] if "0" in stage else "SS"
+                    start, end = map(int, stage[len(prefix) :].split("-"))
                     # Add start and end stages with proper prefix
                     result.extend([f"{prefix}{start}", f"{prefix}{end}"])
                 else:
@@ -63,9 +63,7 @@ class RallyGeoTools:
     @staticmethod
     def get_gdf_from_lat_lon_df(df, lat="latitude", lon="longitude", crs="EPSG:4326"):
         # Create a GeoDataFrame
-        _df = gpd.GeoDataFrame(
-            df, geometry=gpd.points_from_xy(df[lon], df[lat])
-        )
+        _df = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df[lon], df[lat]))
 
         # Set the coordinate reference system (CRS) to WGS84 (EPSG:4326)
         _df.set_crs(crs, inplace=True)
@@ -87,9 +85,9 @@ class RallyGeoTools:
 
     @staticmethod
     def simple_stage_map(stages_gdf, stages=None, poi_gdf=None, zoom=9):
-        # TO DO - we need to handle/ignore dupliacte stage routes
+        # TO DO - we need to handle/ignore duplicate stage routes
         if stages is not None:
-            stages = {stages} if isinstance(stages,str) else set(stages)
+            stages = {stages} if isinstance(stages, str) else set(stages)
             stages_gdf = stages_gdf[
                 stages_gdf["stages"].apply(lambda x: bool(set(x) & stages))
             ]
@@ -122,7 +120,8 @@ class RallyGeoTools:
 
         m.add(geo_data)
         if poi_gdf is not None:
-            poi_gdf = poi_gdf[poi_gdf['desription'].isin(stages)]
+            # desription (sic)
+            poi_gdf = poi_gdf[poi_gdf["desription"].isin(stages)]
             for idx, row in poi_gdf.dropna(subset="label").iterrows():
                 icon_text = row["name"].split(" ")[-1]
                 icon = DivIcon(

@@ -8,8 +8,8 @@ from io import StringIO
 import kml2geojson
 from typing import Dict, Any
 
-from time import sleep
-import random
+# from time import sleep
+# import random
 import json
 import gzip
 import base64
@@ -159,7 +159,7 @@ class WRCDataAPIClient:
         # q = "queryMeta?t=%22Event%22&p=%7B%22n%22%3A%22availability%22%2C%22v%22%3A%22now%22%7D&maxdepth=1"
         # TO DO the following filters on category
         q = "queryMeta?t=%22Event%22&p=%7B%22n%22%3A%22category%22%2C%22v%22%3A%22WRC%22%7D&maxdepth=1"
-        # TO DO - to get the kmlurl we need to set the depth to 2 and parse down
+        # TO DO - to get the kmlurl we need to set the depth to 2 and parse down
 
         # TO DO - we can get event by category:
         # https://webappsdata.wrc.com/srv/wrc/json/api/wrcsrv/queryMeta?t=%22Event%22&p=%7B%22n%22%3A%22category%22%2C%22v%22%3A%22WRC%22%7D&maxdepth=1
@@ -471,7 +471,7 @@ class WRCDataAPIClient:
         if stub_rally is None:
             stub_rally = "https://webappsdata.wrc.com/srv/wrc/json/api/wrcsrv/byId?id=%22{}%22&maxdepth=2"
         rallydata = self.r.get(stub_rally.format(_rallyID), verify=False).json()
-        #print(stub_rally.format(_rallyID))
+        # print(stub_rally.format(_rallyID))
         return _rallyID, rallydata
 
     def _process_rally_data(self, rallydata, _rallyID):  # , _rallyID):
