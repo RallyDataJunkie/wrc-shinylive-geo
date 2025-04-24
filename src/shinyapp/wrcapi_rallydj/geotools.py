@@ -1,5 +1,5 @@
 import geopandas as gpd
-
+from pandas import DataFrame
 from shapely.geometry import Point, LineString
 from ipyleaflet import Map, Marker, GeoData, GeoJSON, Popup, DivIcon, Polyline
 from ipywidgets import HTML
@@ -308,36 +308,45 @@ class RallyGeoTools:
         return gdf_segments
 
     # Via Claude
+
     def route_elevations(self, route_input, mode="elevations"):
         """
         Retrieve and process elevation data with flexible output modes
-        
+
         Usage:
 
             routes_gdf.loc[index, 'geometry'] = route_elevations(routes_gdf.iloc[index], mode='augmented')
 
             routes_gdf['geometry'] = routes_gdf.apply(
-                lambda row: route_elevations(row, mode='augmented'), 
+                lambda row: route_elevations(row, mode='augmented'),
                 axis=1
             )
 
         Parameters:
         route_input: Can be GeoPandas row, Shapely Geometry, GeoJSON dict/string
-        mode: Output mode - 'elevations', 'coords', 'augmented'
-        
+        mode: Output mode - 'elevations', 'coords', 'augmented', 'elevationdistance', 'elevationdistance_df'
+
         Returns:
         Depends on mode:
         - 'elevations': List of elevation values
         - 'coords': List of [lon, lat, elevation] tuples
         - 'augmented': Augmented input (geometry/GeoJSON with elevation)
+        - 'elevationdistance': List of (distance_along_route_meters, elevation) tuples
+        - 'elevationdistance_df': Dataframe with distance along route and elevation columns (in meters)
         """
+        import geopandas as gpd
+        from shapely.geometry import LineString, Point
+        import json
+        import requests
+        import shapely
+
         def extract_coordinates(input_route):
             # Robust coordinate extraction
             def get_base_coords(geometry):
                 # Handle different geometry types and coordinate dimensions
-                if geometry.geom_type == 'LineString':
+                if geometry.geom_type == "LineString":
                     coords = list(geometry.coords)
-                elif geometry.geom_type == 'MultiLineString':
+                elif geometry.geom_type == "MultiLineString":
                     # Take first linestring if multiple exist
                     coords = list(geometry[0].coords)
                 else:
@@ -347,25 +356,25 @@ class RallyGeoTools:
                 return [coord[:2] for coord in coords]
 
             # GeoPandas row
-            if hasattr(input_route, 'geometry'):
+            if hasattr(input_route, "geometry"):
                 geometry = input_route.geometry
                 coords = get_base_coords(geometry)
             # Shapely geometry
-            elif hasattr(input_route, 'geom_type'):
+            elif hasattr(input_route, "geom_type"):
                 geometry = input_route
                 coords = get_base_coords(geometry)
             # GeoJSON dictionary
             elif isinstance(input_route, dict):
                 # Check for FeatureCollection or Feature
-                if input_route.get('type') == 'FeatureCollection':
-                    geometry = shapely.from_geojson(json.dumps(input_route['features'][0]))
+                if input_route.get("type") == "FeatureCollection":
+                    geometry = shapely.from_geojson(json.dumps(input_route["features"][0]))
                     coords = get_base_coords(geometry)
-                elif input_route.get('type') == 'Feature':
+                elif input_route.get("type") == "Feature":
                     geometry = shapely.from_geojson(json.dumps(input_route))
                     coords = get_base_coords(geometry)
-                elif input_route.get('type') == 'LineString':
+                elif input_route.get("type") == "LineString":
                     # Extract coordinates, truncating to 2D
-                    coords = [coord[:2] for coord in input_route['coordinates']]
+                    coords = [coord[:2] for coord in input_route["coordinates"]]
                 else:
                     raise ValueError(f"Unsupported GeoJSON type: {input_route.get('type')}")
             # GeoJSON string
@@ -381,7 +390,7 @@ class RallyGeoTools:
             return coords, geometry
 
         # Validate mode
-        valid_modes = ['elevations', 'coords', 'augmented']
+        valid_modes = ["elevations", "coords", "augmented", "elevationdistance"]
         if mode not in valid_modes:
             raise ValueError(f"Invalid mode. Choose from {valid_modes}")
 
@@ -398,50 +407,96 @@ class RallyGeoTools:
         try:
             # Use Open-Elevation API (free, no key required)
             response = requests.post(
-                "https://api.open-elevation.com/api/v1/lookup", 
-                json={"locations": locations}
+                "https://api.open-elevation.com/api/v1/lookup",
+                json={"locations": locations},
             )
             response.raise_for_status()
             elevation_data = response.json()
 
             # Extract elevations
-            elevations = [loc['elevation'] for loc in elevation_data['results']]
+            elevations = [loc["elevation"] for loc in elevation_data["results"]]
 
             # Create augmented coordinates with elevation
             augmented_coords = [
-                list(coord) + [elev] 
-                for coord, elev in zip(coordinates, elevations)
+                list(coord) + [elev] for coord, elev in zip(coordinates, elevations)
             ]
 
             # Return based on mode
-            if mode == 'elevations':
+            if mode == "elevations":
                 return elevations
 
-            if mode == 'coords':
+            if mode == "coords":
                 return augmented_coords
 
+            if mode.startswith("elevationdistance"):
+                # For elevationdistance mode, we need to calculate distances in meters
+                # Create a GeoDataFrame with the route in WGS84 (EPSG:4326)
+                route_line = LineString(coordinates)
+                route_gdf = gpd.GeoDataFrame(geometry=[route_line], crs="EPSG:4326")
+
+                # Get the center point of the route to determine appropriate UTM zone
+                center_point = route_line.centroid
+                center_gdf = gpd.GeoDataFrame(geometry=[center_point], crs="EPSG:4326")
+
+                # Estimate appropriate UTM CRS based on the center of the route
+                utm_crs = center_gdf.estimate_utm_crs()
+
+                # Project route to UTM for accurate measurements in meters
+                projected_route_gdf = route_gdf.to_crs(utm_crs)
+                projected_route = projected_route_gdf.geometry[0]
+
+                # Project each point and calculate distance along the route in meters
+                distances = []
+                prev_point = None
+                current_distance = 0.0
+
+                for coord in coordinates:
+                    # Create point in WGS84
+                    point = Point(coord)
+                    point_gdf = gpd.GeoDataFrame(geometry=[point], crs="EPSG:4326")
+
+                    # Project point to same UTM CRS
+                    projected_point = point_gdf.to_crs(utm_crs).geometry[0]
+
+                    if prev_point is None:
+                        # First point has distance 0
+                        distances.append(0.0)
+                    else:
+                        # Add segment distance to running total
+                        segment_distance = projected_point.distance(prev_point)
+                        current_distance += segment_distance
+                        distances.append(current_distance)
+
+                    prev_point = projected_point
+
+                # Create distance-elevation pairs dataframe
+                distance_elevation_pairs = list(zip(distances, elevations))
+                if mode == "elevationdistance_df":
+                    distance_elevation_pairs = DataFrame(
+                    distance_elevation_pairs,
+                    columns=["distance", "elevation"],
+                )
+                return distance_elevation_pairs
+
             # Augmented mode
-            if hasattr(route_input, 'geometry') or hasattr(route_input, 'geom_type'):
+            if hasattr(route_input, "geometry") or hasattr(route_input, "geom_type"):
                 # For GeoPandas row or Shapely geometry, return augmented geometry
                 return LineString(augmented_coords)
 
             # For GeoJSON, reconstruct with elevation information
             if isinstance(route_input, dict):
                 # Preserve original GeoJSON structure
-                if route_input.get('type') == 'FeatureCollection':
-                    route_input['features'][0]['geometry']['coordinates'] = augmented_coords
-                elif route_input.get('type') == 'Feature':
-                    route_input['geometry']['coordinates'] = augmented_coords
-                elif route_input.get('type') == 'LineString':
-                    route_input['coordinates'] = augmented_coords
+                if route_input.get("type") == "FeatureCollection":
+                    route_input["features"][0]["geometry"]["coordinates"] = augmented_coords
+                elif route_input.get("type") == "Feature":
+                    route_input["geometry"]["coordinates"] = augmented_coords
+                elif route_input.get("type") == "LineString":
+                    route_input["coordinates"] = augmented_coords
 
                 return route_input
 
             # For GeoJSON string or other inputs
-            return {
-                "type": "LineString",
-                "coordinates": augmented_coords
-            }
+            return {"type": "LineString", "coordinates": augmented_coords}
 
         except Exception as e:
             print(f"Elevation retrieval error: {e}")
