@@ -33,6 +33,14 @@ class RallyGeoTools:
 
     def geojson_to_gpd(self, gj, crs="EPSG:4326"):
 
+        def fix_encoding(text):
+            if isinstance(text, str):
+                try:
+                    return text.encode('latin1').decode('utf-8')
+                except UnicodeDecodeError:
+                    return text  # Return as-is if decoding fails
+            return text
+
         def expand_hyphenated_stages(stages_list):
             """
             Expands stages with hyphens (e.g., 'SS5-8' to ['SS5', 'SS8']) while preserving
@@ -49,7 +57,8 @@ class RallyGeoTools:
             for stage in stages_list:
                 if "-" in stage:
                     # Extract the prefix (SS) and the numbers
-                    prefix = stage[: stage.find("0")] if "0" in stage else "SS"
+                    # TO DO - need handlers for badly behaved names
+                    prefix = stage[: stage.find("0")] if "0" in stage and "SS" not in stage else "SS"
                     start, end = map(int, stage[len(prefix) :].split("-"))
                     # Add start and end stages with proper prefix
                     result.extend([f"{prefix}{start}", f"{prefix}{end}"])
@@ -60,6 +69,8 @@ class RallyGeoTools:
 
         _gdf = gpd.GeoDataFrame.from_features(gj["features"], crs=crs)
         _gdf = self.add_start_end_coords(_gdf)
+        if "name" in _gdf.columns:
+            _gdf["name"] = _gdf["name"].apply(fix_encoding)
         retcols = ["name", "stages", "start", "finish", "geometry"]
         retcols = [c for c in retcols if c in _gdf.columns]
         _gdf["stages"] = _gdf["stages"].apply(expand_hyphenated_stages)
@@ -247,6 +258,54 @@ class RallyGeoTools:
         )
 
         return result
+
+    def route_N_segments_meters(self, line, points, toend=False):
+        """
+        Create N-1 segments from N points measured in meters along a line.
+
+        Parameters:
+        -----------
+        line : shapely.geometry.LineString
+            Input LineString in WGS84 (EPSG:4326)
+        points : list
+            List of distances in meters from the beginning of the line
+        toend : bool, default=False
+            If True, automatically add the line's length as the final point
+
+        Returns:
+        --------
+        gpd.GeoDataFrame
+            GeoDataFrame containing all segments with their index and geometry
+        """
+        # Ensure points are sorted
+        points = sorted(points)
+
+        # Get line length in meters (UTM projection)
+        WGS84 = "EPSG:4326"
+        gdf = gpd.GeoDataFrame(geometry=[line], crs=WGS84)
+        utm_crs = gdf.estimate_utm_crs()
+        line_utm = gdf.to_crs(utm_crs).geometry.iloc[0]
+        line_length = line_utm.length
+
+        # Add line's length as the final point if toend=True
+        if toend and (not points or points[-1] < line_length):
+            points.append(line_length)
+
+        # Ensure 0 is the first point if not already included
+        if not points or points[0] > 0:
+            points.insert(0, 0)
+
+        # Create segments between consecutive points
+        segments = []
+        for i in range(len(points) - 1):
+            segment = self.cut_line_by_distance_meters(line, points[i], points[i + 1])
+            segments.append(segment)
+
+        # Create GeoDataFrame with segments
+        gdf_segments = gpd.GeoDataFrame(list(range(len(segments))), geometry=segments)
+        gdf_segments.columns = ["index", "geometry"]
+
+        return gdf_segments
 
     # Via Claude
     def route_elevations(self, route_input, mode="elevations"):
@@ -544,7 +603,7 @@ class RallyGeoTools:
 
         # Automatically estimate the best UTM CRS for the point
         utm_crs = point.estimate_utm_crs()
-        #print(f"Estimated UTM CRS: {utm_crs}")
+        # print(f"Estimated UTM CRS: {utm_crs}")
 
         # Project both route and point to the estimated UTM CRS
         projected_gdf = gdf.to_crs(utm_crs)

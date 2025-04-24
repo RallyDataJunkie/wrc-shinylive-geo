@@ -7,6 +7,7 @@ import pandas as pd
 from io import StringIO
 import kml2geojson
 from typing import Dict, Any
+import re
 
 # from time import sleep
 # import random
@@ -19,7 +20,7 @@ import base64
 
 
 class WRCDataAPIClient:
-    """Client for accessing Dakar Rally API data."""
+    """Client for accessing WRC Telemetry Rally API data."""
 
     WRC_DATA_API_BASE = "https://webappsdata.wrc.com/srv/wrc/json/api/wrcsrv/{query}"
 
@@ -56,18 +57,32 @@ class WRCDataAPIClient:
 
     def kmlfile_to_json(self, kmlfile):
         kmlurl = self.WRC_KML_PATH.format(kmlfile=kmlfile)
-        text = StringIO(self.r.get(kmlurl).text)
+        text = StringIO(
+            re.sub(
+                r"[\u200b\u200e\u200f]",
+                "",
+                self.r.get(kmlurl).content.decode("utf-8"),
+            )
+        )
         return kml2geojson.main.convert(text)
 
     def read_kmlfile(self, kmlfile):
         def _simpleStageList(stages):
-            if stages.startswith("SS "):
-                stages = [f"SS{s}" for s in stages.split(" ")[-1].split("/")]
-            elif stages.startswith("SS"):
-                stages = [f"SS{s.replace('SS','')}" for s in stages.split(" ")[0].split("/")]
+            if stages.startswith("SS"):
+                # Match SS + one or more number parts separated by / or -
+                match = re.match(r'SS\s*(\d+(?:\s*[-/]\s*\d+)*)', stages)
+                if not match:
+                    return []
+
+                segment = match.group(1)
+                
+                # Split on - or /, keep only endpoints
+                numbers = re.split(r'[-/]', segment)
+                stages = [f'SS{int(n.strip())}' for n in numbers if n.strip().isdigit()]
+
+                return stages
             else:
-                stages = [stages]
-            return stages
+                return [stages]
 
         gj = self.kmlfile_to_json(kmlfile)[0]
         for feature in gj["features"]:
@@ -269,6 +284,7 @@ class WRCDataAPIClient:
         if as_gdf and self.GeoTools:
             _df = self.GeoTools.get_gdf_from_lat_lon_df(_df)
             _df.dropna(subset="latitude", inplace=True)
+        _df.drop_duplicates(inplace=True)
         return _df
 
     def get_rallies_data(self, year=None, alldata=None, as_dict=False):
