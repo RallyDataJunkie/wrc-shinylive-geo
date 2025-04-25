@@ -23,8 +23,9 @@ class WRCDataAPIClient:
     """Client for accessing WRC Telemetry Rally API data."""
 
     WRC_DATA_API_BASE = "https://webappsdata.wrc.com/srv/wrc/json/api/wrcsrv/{query}"
-
-    WRC_KML_PATH = "https://webapps2.wrc.com/2020/web/live/kml/{kmlfile}.xml"
+    WRC_ASSETS_PATH = "https://webapps2.wrc.com/2020/web"
+    # We can use the WRC_ASSETS_PATH to retrieve the get_rallies_data "logo"
+    WRC_KML_PATH = WRC_ASSETS_PATH + "/live/kml/{kmlfile}.xml"
     CATEGORY_MAP = {
             "ALL": "all",
             "WRC": "wrc",
@@ -43,6 +44,7 @@ class WRCDataAPIClient:
             self.GeoTools = None
 
         self.year = year
+        self.championshipType = None
         self.eventId = None
         self.rallyId = None
         # Simple requests session
@@ -75,7 +77,7 @@ class WRCDataAPIClient:
                     return []
 
                 segment = match.group(1)
-                
+
                 # Split on - or /, keep only endpoints
                 numbers = re.split(r'[-/]', segment)
                 stages = [f'SS{int(n.strip())}' for n in numbers if n.strip().isdigit()]
@@ -169,13 +171,13 @@ class WRCDataAPIClient:
         df["_record_name"] = rname
         return df
 
-    def get_base_data(self, retval=False):
+    def get_base_data(self, typ="WRC", retval=False):
         """Get base rally data, keyed by year."""
         # The "availability now" list adds entries when a rally is running.
         # This DOES NOT include shakedown or the days prior to the rally start.
         # q = "queryMeta?t=%22Event%22&p=%7B%22n%22%3A%22availability%22%2C%22v%22%3A%22now%22%7D&maxdepth=1"
         # TO DO the following filters on category
-        q = "queryMeta?t=%22Event%22&p=%7B%22n%22%3A%22category%22%2C%22v%22%3A%22WRC%22%7D&maxdepth=1"
+        q = f"queryMeta?t=%22Event%22&p=%7B%22n%22%3A%22category%22%2C%22v%22%3A%22{typ.upper()}%22%7D&maxdepth=1"
         # TO DO - to get the kmlurl we need to set the depth to 2 and parse down
 
         # TO DO - we can get event by category:
@@ -190,6 +192,7 @@ class WRCDataAPIClient:
         url = self.WRC_DATA_API_BASE.format(query=q)
 
         basedata = self.r.get(url, verify=False).json()
+        self.championshipType = typ
 
         # Useful - type, name, _id, _meta
         alldata = {}
@@ -262,6 +265,9 @@ class WRCDataAPIClient:
         # The seasons data
         # return { s['name']:s for s in seasondata }
         # return seasons[typ]
+        if not typ or typ.lower() != "all":
+            return self._wrc_events_to_df(seasons)
+
         return self._wrc_events_to_df(seasons[typ])
 
     def get_poilist_data(self, poilist, as_gdf=True):
@@ -287,7 +293,7 @@ class WRCDataAPIClient:
         _df.drop_duplicates(inplace=True)
         return _df
 
-    def get_rallies_data(self, year=None, alldata=None, as_dict=False):
+    def get_rallies_data(self, year=None, typ="WRC", alldata=None, as_dict=False):
         """Get rally data as dataframe."""
         # If we provide a year for the rallies, assume this is the year we are using
         if year is not None:
@@ -295,8 +301,10 @@ class WRCDataAPIClient:
         else:
             year = self.year
         df_rallies = pd.DataFrame()
-        if alldata is None:
-            alldata = self.alldata if self.alldata else self.get_base_data(retval=True)
+        if typ !=self.championshipType or year!=self.year:
+            alldata = self.get_base_data(typ=typ, retval=True)
+        elif alldata is None:
+            alldata = self.alldata if self.alldata else self.get_base_data(typ=typ,retval=True)
         years = year if year else alldata.keys()
         years = [years] if not isinstance(years, list) else years
         years = [str(year) for year in years]
