@@ -145,9 +145,9 @@ class RallyGeoTools:
                 marker = Marker(location=(row["latitude"], row["longitude"]), icon=icon)
                 message = HTML()
                 message.value = str(row["label"])
-                marker.popup = Popup(
-                    location=(row["latitude"], row["longitude"]), child=message
-                )
+                #marker.popup = Popup(
+                #    location=(row["latitude"], row["longitude"]), child=message
+                #)
 
                 m.add_layer(marker)
         return m
