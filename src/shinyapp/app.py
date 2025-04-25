@@ -2,6 +2,10 @@ from wrcapi_rallydj.data_api import WRCDataAPIClient
 from shiny.express import ui, input
 from shiny import render, reactive
 from shinywidgets import render_widget
+import requests
+from pandas import DataFrame
+from ipyleaflet import Map, Marker, Popup
+from ipywidgets import HTML
 
 wrcapi = WRCDataAPIClient(usegeo=True)
 
@@ -101,6 +105,45 @@ def update_stages_select():
         ui.update_select("stage", choices=stages)
 
 
+# @render.data_frame
+# def show_live_data():
+#    live_data = car_getdata()
+#    return render.DataGrid(live_data)
+
+# Map rendering function using ipyleaflet
+@render_widget
+def show_map():
+    def add_marker(row, m):
+        # Create marker
+        marker = Marker(location=(row["lat"], row["lon"]))#, draggable=False)
+        # Add a popup with the name that opens by default
+        # message = HTML()
+        # message.value = f"<b>{row['name']}</b>"
+        # marker.popup = Popup(
+        #    location=marker.location,
+        #    child=message,
+        # )
+
+        # Add marker to map
+        m.add_layer(marker)
+
+    # Get the latest data
+    df = car_getdata()
+
+    # Create a base map centered on the average location
+    center_lat = df["lat"].mean()
+    center_lon = df["lon"].mean()
+    m = Map(center=(center_lat, center_lon), zoom=9)
+    # Add markers for each point in the data
+    # Add markers to map
+    df.apply(lambda row: add_marker(row, m), axis=1)
+
+    m.fit_bounds(
+        [[df["lat"].min(), df["lon"].min()], [df["lat"].max(), df["lon"].max()]]
+    )
+    return m
+
+
 with ui.accordion(open=False):
     with ui.accordion_panel("Season info"):
 
@@ -121,6 +164,7 @@ with ui.accordion(open=False):
 # Card pattern, no tooltip
 # with ui.card(class_="mt-3"):
 #    ui.card_header("Card title")
+
 
 with ui.accordion(open=False):
     with ui.accordion_panel("Event info"):
@@ -202,3 +246,17 @@ with ui.accordion(open=False):
                     geostages = rally_geodata()
                     m = wrcapi.GeoTools.simple_stage_map(geostages, input.stage())
                     return m
+
+
+## LIVE DATA
+
+def get_data_feed():
+    return requests.get(
+        "https://webappsdata.wrc.com/srv/wrc/json/api/liveservice/getData?timeout=5000"
+    ).json()["_entries"]
+
+
+@reactive.poll(get_data_feed, 5.1)
+def car_getdata():
+    json_data = get_data_feed()
+    return DataFrame(json_data)
