@@ -723,21 +723,28 @@ class RallyGeoTools:
         except Exception as e:
             return {"error": str(e), "latitude": lat, "longitude": lon}
 
+
     def enhance_route_resolution_osm(
-        self,
         geodf,
         point_spacing_meters=10,
         route_simplify_tolerance=None,
         use_osm=True,
+        retain_original_points=True,
+        snap_points_to_road=False,
+        max_snap_distance_meters=10,
     ):
         """
-        Enhance route resolution by adding points at regular meter intervals while PRESERVING original route points.
+        Enhance route resolution by adding points at regular meter intervals while PRESERVING original route points,
+        with optional snapping of original points to nearby OSM roads.
 
         Args:
             geodf: GeoDataFrame containing LineString geometries representing routes
             point_spacing_meters: Distance between points in meters (default 10m)
             route_simplify_tolerance: Optional tolerance for simplifying the route after enhancement
             use_osm: Whether to use OSM data for route enhancement (if False, just does regular spacing)
+            retain_original_points: Whether to keep original route points (default True)
+            snap_points_to_road: Whether to snap original points to nearby OSM roads (default False)
+            max_snap_distance_meters: Maximum distance in meters to snap points to roads (default 10m)
 
         Returns:
             Enhanced GeoDataFrame with more detailed route geometries
@@ -762,11 +769,72 @@ class RallyGeoTools:
                 print(f"Error fetching OSM data: {e}")
                 return None
 
+        def find_closest_point_on_roads(point, roads, utm_crs, max_distance_meters):
+            """Find the closest point on OSM roads within the max distance"""
+            if roads is None or roads.empty:
+                return None
+
+            # Create a point GeoDataFrame in WGS84
+            point_gdf = gpd.GeoDataFrame(geometry=[Point(point)], crs="EPSG:4326")
+
+            # Convert to UTM for accurate distance measurement
+            point_utm = point_gdf.to_crs(utm_crs)
+
+            # Convert roads to UTM as well for accurate distance calculation
+            roads_utm = roads.to_crs(utm_crs)
+
+            # Find nearest road
+            nearest_roads = roads_utm[
+                roads_utm.distance(point_utm.geometry.iloc[0]) <= max_distance_meters
+            ]
+
+            if nearest_roads.empty:
+                return None
+
+            # Find the closest road
+            closest_road_idx = nearest_roads.distance(point_utm.geometry.iloc[0]).idxmin()
+            closest_road = nearest_roads.geometry.iloc[closest_road_idx]
+
+            # Find closest point on that road
+            if closest_road.geom_type == "LineString":
+                closest_point_utm = closest_road.interpolate(
+                    closest_road.project(point_utm.geometry.iloc[0])
+                )
+            elif closest_road.geom_type == "MultiLineString":
+                # Find closest part of the MultiLineString
+                min_dist = float("inf")
+                closest_point_utm = None
+
+                for part in closest_road.geoms:
+                    proj_point = part.interpolate(part.project(point_utm.geometry.iloc[0]))
+                    dist = point_utm.geometry.iloc[0].distance(proj_point)
+
+                    if dist < min_dist:
+                        min_dist = dist
+                        closest_point_utm = proj_point
+            else:
+                return None
+
+            # Convert back to WGS84
+            if closest_point_utm:
+                point_gdf = gpd.GeoDataFrame(geometry=[closest_point_utm], crs=utm_crs)
+                closest_point_wgs84 = point_gdf.to_crs("EPSG:4326").geometry.iloc[0]
+                return (float(closest_point_wgs84.x), float(closest_point_wgs84.y))
+
+            return None
+
         def enhance_line_with_regular_points(
-            line, spacing_meters, roads=None, buffer_deg=0.0005
+            self,
+            line,
+            spacing_meters,
+            roads=None,
+            buffer_deg=0.0005,
+            snap_to_road=False,
+            max_snap_dist=10,
         ):
             """
             Enhance a LineString with points at regular meter intervals while preserving original points.
+            Optional: snap original points to nearby roads.
 
             If roads is provided, also adds points from OSM road network.
             """
@@ -792,6 +860,7 @@ class RallyGeoTools:
                 return line
 
             # Original route points - these are GROUND TRUTH and must be preserved exactly
+            # (unless we're snapping to roads)
             try:
                 # Make sure we use only x,y coordinates
                 original_points = [(float(p[0]), float(p[1])) for p in line.coords]
@@ -803,12 +872,8 @@ class RallyGeoTools:
                 # Create a GeoDataFrame with the line for projection to UTM
                 line_gdf = gpd.GeoDataFrame(geometry=[line], crs="EPSG:4326")
 
-                # Get the centroid of the line to determine UTM zone
-                centroid = line.centroid
-                center_gdf = gpd.GeoDataFrame(geometry=[centroid], crs="EPSG:4326")
-
                 # Determine the appropriate UTM CRS for accurate measurements
-                utm_crs = center_gdf.estimate_utm_crs()
+                utm_crs = line_gdf.estimate_utm_crs()
 
                 # Project line to UTM for accurate measurements
                 line_utm = line_gdf.to_crs(utm_crs).geometry.iloc[0]
@@ -818,6 +883,23 @@ class RallyGeoTools:
             except Exception as e:
                 print(f"Error projecting to UTM: {e}")
                 return line
+
+            # If snapping is enabled, create snapped versions of original points
+            if snap_to_road and roads is not None and not roads.empty:
+                snapped_original_points = []
+                for pt in original_points:
+                    snapped_pt = find_closest_point_on_roads(
+                        pt, roads, utm_crs, max_snap_dist
+                    )
+                    if snapped_pt:
+                        snapped_original_points.append(snapped_pt)
+                    else:
+                        # If no suitable road point found, keep original
+                        snapped_original_points.append(pt)
+
+                # Replace original points with snapped versions if snapping is enabled
+                if snap_to_road:
+                    original_points = snapped_original_points
 
             # Add OSM road points if available
             osm_points = []
@@ -837,9 +919,7 @@ class RallyGeoTools:
                     # For each segment in the original route
                     for i in range(len(original_points) - 1):
                         # Create a LineString for this segment
-                        segment = LineString(
-                            [original_points[i], original_points[i + 1]]
-                        )
+                        segment = LineString([original_points[i], original_points[i + 1]])
                         segment_buffer = segment.buffer(buffer_deg)
 
                         # Find OSM roads that might provide additional detail for this segment
@@ -851,9 +931,7 @@ class RallyGeoTools:
                                     point = Point(pt)
                                     if segment_buffer.contains(point):
                                         # Calculate position along the segment (0-1)
-                                        position = segment.project(
-                                            point, normalized=True
-                                        )
+                                        position = segment.project(point, normalized=True)
                                         if (
                                             0 < position < 1
                                         ):  # Only add points between our original points
@@ -882,10 +960,7 @@ class RallyGeoTools:
                                                 + segment_utm.project(point_utm)
                                             )
                                             osm_points.append(
-                                                (
-                                                    point_dist,
-                                                    (float(pt[0]), float(pt[1])),
-                                                )
+                                                (point_dist, (float(pt[0]), float(pt[1])))
                                             )
                 except Exception as e:
                     print(f"Error processing OSM roads: {e}")
@@ -927,17 +1002,18 @@ class RallyGeoTools:
             all_points_with_dist = []
 
             # Add original points with distances
-            try:
-                for pt in original_points:
-                    # Project original point to UTM to get distance
-                    pt_gdf = gpd.GeoDataFrame(geometry=[Point(pt)], crs="EPSG:4326")
-                    pt_utm = pt_gdf.to_crs(utm_crs).geometry.iloc[0]
-                    dist = line_utm.project(pt_utm)
-                    all_points_with_dist.append((dist, pt))
-            except Exception as e:
-                print(f"Error processing original points: {e}")
-                # Make sure original points are still included
-                all_points_with_dist.extend([(0, pt) for pt in original_points])
+            if retain_original_points:
+                try:
+                    for pt in original_points:
+                        # Project original point to UTM to get distance
+                        pt_gdf = gpd.GeoDataFrame(geometry=[Point(pt)], crs="EPSG:4326")
+                        pt_utm = pt_gdf.to_crs(utm_crs).geometry.iloc[0]
+                        dist = line_utm.project(pt_utm)
+                        all_points_with_dist.append((dist, pt))
+                except Exception as e:
+                    print(f"Error processing original points: {e}")
+                    # Make sure original points are still included
+                    all_points_with_dist.extend([(0, pt) for pt in original_points])
 
             # Add OSM and regular points
             all_points_with_dist.extend(osm_points)
@@ -982,9 +1058,7 @@ class RallyGeoTools:
                     simplified_coords = list(simplified.coords)
 
                     # Ensure all original points are included
-                    final_coords = list(
-                        simplified_coords
-                    )  # Start with simplified points
+                    final_coords = list(simplified_coords)  # Start with simplified points
 
                     for orig_pt in original_points:
                         # Check if original point is already in simplified coords
@@ -1041,7 +1115,12 @@ class RallyGeoTools:
                         roads = None
 
                     enhanced_line = enhance_line_with_regular_points(
-                        geom, point_spacing_meters, roads, buffer_deg
+                        geom,
+                        point_spacing_meters,
+                        roads,
+                        buffer_deg,
+                        snap_to_road=snap_points_to_road,
+                        max_snap_dist=max_snap_distance_meters,
                     )
                     enhanced_geometries.append(enhanced_line)
                 elif geom.geom_type == "MultiLineString":
@@ -1054,7 +1133,12 @@ class RallyGeoTools:
                             roads = None
 
                         enhanced_part = enhance_line_with_regular_points(
-                            part, point_spacing_meters, roads, buffer_deg
+                            part,
+                            point_spacing_meters,
+                            roads,
+                            buffer_deg,
+                            snap_to_road=snap_points_to_road,
+                            max_snap_dist=max_snap_distance_meters,
                         )
                         enhanced_parts.append(enhanced_part)
                     # Keep it as a MultiLineString
