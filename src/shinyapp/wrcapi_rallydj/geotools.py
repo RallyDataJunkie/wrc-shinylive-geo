@@ -725,6 +725,7 @@ class RallyGeoTools:
 
 
     def enhance_route_resolution_osm(
+        self,
         geodf,
         point_spacing_meters=10,
         route_simplify_tolerance=None,
@@ -824,7 +825,6 @@ class RallyGeoTools:
             return None
 
         def enhance_line_with_regular_points(
-            self,
             line,
             spacing_meters,
             roads=None,
