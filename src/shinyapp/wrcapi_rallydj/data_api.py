@@ -262,13 +262,21 @@ class WRCDataAPIClient:
                 seasons[event["category"]] = {event["name"]: s}
             else:
                 seasons[event["category"]][event["name"]] = s
-        # The seasons data
-        # return { s['name']:s for s in seasondata }
-        # return seasons[typ]
-        if not typ or typ.lower() != "all":
-            return self._wrc_events_to_df(seasons)
 
+                # The seasons data
+                # return { s['name']:s for s in seasondata }
+                # return seasons[typ]
+
+        if not typ or typ.lower() == "all" or typ not in seasons:
+            all_champs = pd.concat(
+                [self._wrc_events_to_df(seasons["WRC"]), self._wrc_events_to_df(seasons["ERC"])],
+                axis=0,
+                ignore_index=True,
+            )
+            return all_champs.reset_index(drop =True)
+       
         return self._wrc_events_to_df(seasons[typ])
+        
 
     def get_poilist_data(self, poilist, as_gdf=True):
         """Get poi list data."""
@@ -309,11 +317,12 @@ class WRCDataAPIClient:
         years = [years] if not isinstance(years, list) else years
         years = [str(year) for year in years]
         for year in years:
-            rallies_year = alldata[year]
-            for rid in rallies_year.keys():
-                _df_rallies = self._df_from_record(rallies_year[rid])
-                _df_rallies["year"] = year
-                df_rallies = pd.concat([df_rallies, _df_rallies], sort=False)
+            if year in alldata:
+                rallies_year = alldata[year]
+                for rid in rallies_year.keys():
+                    _df_rallies = self._df_from_record(rallies_year[rid])
+                    _df_rallies["year"] = year
+                    df_rallies = pd.concat([df_rallies, _df_rallies], sort=False)
 
         # TO DO - note this call returns two possible datatypes
         # A dict for a single year, or a df for multiple years
