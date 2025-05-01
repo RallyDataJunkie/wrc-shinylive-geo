@@ -2,11 +2,13 @@ import geopandas as gpd
 from pandas import DataFrame
 from shapely.geometry import Point, LineString, MultiLineString
 from ipyleaflet import Map, Marker, GeoData, GeoJSON, Popup, DivIcon, Polyline
-from ipywidgets import HTML
+
+# from ipywidgets import HTML
 
 import json
 import osmnx as ox
 import numpy as np
+
 
 class RallyGeoTools:
     def __init__(self):
@@ -34,7 +36,7 @@ class RallyGeoTools:
         def fix_encoding(text):
             if isinstance(text, str):
                 try:
-                    return text.encode('latin1').decode('utf-8')
+                    return text.encode("latin1").decode("utf-8")
                 except UnicodeDecodeError:
                     return text  # Return as-is if decoding fails
             return text
@@ -56,7 +58,11 @@ class RallyGeoTools:
                 if "-" in stage:
                     # Extract the prefix (SS) and the numbers
                     # TO DO - need handlers for badly behaved names
-                    prefix = stage[: stage.find("0")] if "0" in stage and "SS" not in stage else "SS"
+                    prefix = (
+                        stage[: stage.find("0")]
+                        if "0" in stage and "SS" not in stage
+                        else "SS"
+                    )
                     start, end = map(int, stage[len(prefix) :].split("-"))
                     # Add start and end stages with proper prefix
                     result.extend([f"{prefix}{start}", f"{prefix}{end}"])
@@ -98,7 +104,14 @@ class RallyGeoTools:
         return gdf
 
     @staticmethod
-    def simple_stage_map(stages_gdf, stages=None, poi_gdf=None, zoom=9, buffer_percentage=0.05):
+    def simple_stage_map(
+        stages_gdf,
+        stages=None,
+        poi_gdf=None,
+        labelcoords=None,
+        zoom=9,
+        buffer_percentage=0.05,
+    ):
         # TO DO - we need to handle/ignore duplicate stage routes
         if stages is not None:
             stages = {stages} if isinstance(stages, str) else set(stages)
@@ -132,20 +145,34 @@ class RallyGeoTools:
         )
 
         m.add(geo_data)
+
+        if labelcoords:
+            for label, coords in labelcoords:
+                icon_text = f'<div style="background-color:rgba(50, 50, 50, 0.7); display:inline-block; padding:4px 8px; color:white; font-weight:bold; border-radius:3px;">{label}</div>'
+                icon = DivIcon(
+                    html=icon_text,
+                    icon_anchor=[0, 0],
+                )
+                marker = Marker(location=(coords[1], coords[0]), icon=icon)
+                m.add_layer(marker)
+
         if poi_gdf is not None:
             # desription (sic)
-            poi_gdf = poi_gdf[poi_gdf["desription"].isin(stages)]
+            if stages:
+                poi_gdf = poi_gdf[poi_gdf["desription"].isin(stages)]
             for idx, row in poi_gdf.dropna(subset="label").iterrows():
-                icon_text = row["name"].split(" ")[-1]
+                icon_text = f'<div style="background-color:lightgrey; display:inline-block; padding:2px 5px; color:white; font-weight:bold; border-radius:3px; border:none; box-shadow:none;">{row["label"]}</div>'
                 icon = DivIcon(
-                    html=icon_text, bg_pos=[0, 0], icon_size=[8 * len(icon_text), 15]
+                    html=icon_text,
+                    icon_size=[len(icon_text), 15],
+                    icon_anchor=[0, 0],
                 )
                 marker = Marker(location=(row["latitude"], row["longitude"]), icon=icon)
-                message = HTML()
-                message.value = str(row["label"])
-                #marker.popup = Popup(
+                # message = HTML()
+                # message.value = str(row["label"])
+                # marker.popup = Popup(
                 #    location=(row["latitude"], row["longitude"]), child=message
-                #)
+                # )
 
                 m.add_layer(marker)
         return m
@@ -365,7 +392,9 @@ class RallyGeoTools:
             elif isinstance(input_route, dict):
                 # Check for FeatureCollection or Feature
                 if input_route.get("type") == "FeatureCollection":
-                    geometry = shapely.from_geojson(json.dumps(input_route["features"][0]))
+                    geometry = shapely.from_geojson(
+                        json.dumps(input_route["features"][0])
+                    )
                     coords = get_base_coords(geometry)
                 elif input_route.get("type") == "Feature":
                     geometry = shapely.from_geojson(json.dumps(input_route))
@@ -374,7 +403,9 @@ class RallyGeoTools:
                     # Extract coordinates, truncating to 2D
                     coords = [coord[:2] for coord in input_route["coordinates"]]
                 else:
-                    raise ValueError(f"Unsupported GeoJSON type: {input_route.get('type')}")
+                    raise ValueError(
+                        f"Unsupported GeoJSON type: {input_route.get('type')}"
+                    )
             # GeoJSON string
             elif isinstance(input_route, str):
                 try:
@@ -400,7 +431,9 @@ class RallyGeoTools:
             return None
 
         # Prepare locations for elevation lookup
-        locations = [{"latitude": coord[1], "longitude": coord[0]} for coord in coordinates]
+        locations = [
+            {"latitude": coord[1], "longitude": coord[0]} for coord in coordinates
+        ]
 
         try:
             # Use Open-Elevation API (free, no key required)
@@ -471,9 +504,9 @@ class RallyGeoTools:
                 distance_elevation_pairs = list(zip(distances, elevations))
                 if mode == "elevationdistance_df":
                     distance_elevation_pairs = DataFrame(
-                    distance_elevation_pairs,
-                    columns=["distance", "elevation"],
-                )
+                        distance_elevation_pairs,
+                        columns=["distance", "elevation"],
+                    )
                 return distance_elevation_pairs
 
             # Augmented mode
@@ -485,7 +518,9 @@ class RallyGeoTools:
             if isinstance(route_input, dict):
                 # Preserve original GeoJSON structure
                 if route_input.get("type") == "FeatureCollection":
-                    route_input["features"][0]["geometry"]["coordinates"] = augmented_coords
+                    route_input["features"][0]["geometry"][
+                        "coordinates"
+                    ] = augmented_coords
                 elif route_input.get("type") == "Feature":
                     route_input["geometry"]["coordinates"] = augmented_coords
                 elif route_input.get("type") == "LineString":
@@ -504,33 +539,34 @@ class RallyGeoTools:
     def inspect_coordinates(input_route):
         """
         Inspect the coordinates of an input route
-        
+
         Parameters:
         input_route: Input geometry or GeoJSON
-        
+
         Returns:
         Dictionary with coordinate information
         """
+
         def get_coord_info(coords):
             return {
-                'total_coords': len(coords),
-                'first_coord_dimensions': len(coords[0]) if coords else None,
-                'coord_dimensions': [len(coord) for coord in coords[:5]]
+                "total_coords": len(coords),
+                "first_coord_dimensions": len(coords[0]) if coords else None,
+                "coord_dimensions": [len(coord) for coord in coords[:5]],
             }
 
-        if hasattr(input_route, 'geometry'):
+        if hasattr(input_route, "geometry"):
             coords = list(input_route.geometry.coords)
-        elif hasattr(input_route, 'geom_type'):
+        elif hasattr(input_route, "geom_type"):
             coords = list(input_route.coords)
         elif isinstance(input_route, dict):
-            if input_route.get('type') == 'FeatureCollection':
-                coords = input_route['features'][0]['geometry']['coordinates']
-            elif input_route.get('type') == 'Feature':
-                coords = input_route['geometry']['coordinates']
-            elif input_route.get('type') == 'LineString':
-                coords = input_route['coordinates']
+            if input_route.get("type") == "FeatureCollection":
+                coords = input_route["features"][0]["geometry"]["coordinates"]
+            elif input_route.get("type") == "Feature":
+                coords = input_route["geometry"]["coordinates"]
+            elif input_route.get("type") == "LineString":
+                coords = input_route["coordinates"]
         elif isinstance(input_route, str):
-            coords = json.loads(input_route)['coordinates']
+            coords = json.loads(input_route)["coordinates"]
         else:
             return "Unable to extract coordinates"
 
@@ -600,11 +636,7 @@ class RallyGeoTools:
         )
         if len(gdf_segments) == 3:
             end_coords = (
-                list(
-                    self.swap_linestring_coords(
-                        gdf_segments.geometry.iloc[2]
-                    ).coords
-                )
+                list(self.swap_linestring_coords(gdf_segments.geometry.iloc[2]).coords)
                 if swap_coords
                 else list(gdf_segments.geometry.iloc[2].coords)
             )
@@ -623,7 +655,9 @@ class RallyGeoTools:
 
     def leaflet_highlight_route(self, line, start, end=None, swap_coords=False):
         gdf_segments = self.route_segment_meters(line, start, end)
-        m = self.leaflet_highlight_section(gdf_segments, colour=None, swap_coords=swap_coords)
+        m = self.leaflet_highlight_section(
+            gdf_segments, colour=None, swap_coords=swap_coords
+        )
         return m
 
     # Via claude.ai
@@ -688,18 +722,22 @@ class RallyGeoTools:
         except Exception as e:
             return {"error": str(e), "latitude": lat, "longitude": lon}
 
-    def enhance_route_resolution_osm(self,
-        geodf, point_spacing_meters=10, route_simplify_tolerance=None, use_osm=True
+    def enhance_route_resolution_osm(
+        self,
+        geodf,
+        point_spacing_meters=10,
+        route_simplify_tolerance=None,
+        use_osm=True,
     ):
         """
         Enhance route resolution by adding points at regular meter intervals while PRESERVING original route points.
-        
+
         Args:
             geodf: GeoDataFrame containing LineString geometries representing routes
             point_spacing_meters: Distance between points in meters (default 10m)
             route_simplify_tolerance: Optional tolerance for simplifying the route after enhancement
             use_osm: Whether to use OSM data for route enhancement (if False, just does regular spacing)
-            
+
         Returns:
             Enhanced GeoDataFrame with more detailed route geometries
         """
@@ -723,10 +761,12 @@ class RallyGeoTools:
                 print(f"Error fetching OSM data: {e}")
                 return None
 
-        def enhance_line_with_regular_points(line, spacing_meters, roads=None, buffer_deg=0.0005):
+        def enhance_line_with_regular_points(
+            line, spacing_meters, roads=None, buffer_deg=0.0005
+        ):
             """
             Enhance a LineString with points at regular meter intervals while preserving original points.
-            
+
             If roads is provided, also adds points from OSM road network.
             """
             # Ensure we're working with a proper LineString
@@ -796,7 +836,9 @@ class RallyGeoTools:
                     # For each segment in the original route
                     for i in range(len(original_points) - 1):
                         # Create a LineString for this segment
-                        segment = LineString([original_points[i], original_points[i + 1]])
+                        segment = LineString(
+                            [original_points[i], original_points[i + 1]]
+                        )
                         segment_buffer = segment.buffer(buffer_deg)
 
                         # Find OSM roads that might provide additional detail for this segment
@@ -808,20 +850,42 @@ class RallyGeoTools:
                                     point = Point(pt)
                                     if segment_buffer.contains(point):
                                         # Calculate position along the segment (0-1)
-                                        position = segment.project(point, normalized=True)
-                                        if 0 < position < 1:  # Only add points between our original points
+                                        position = segment.project(
+                                            point, normalized=True
+                                        )
+                                        if (
+                                            0 < position < 1
+                                        ):  # Only add points between our original points
                                             # Convert to UTM to get actual distance
-                                            point_gdf = gpd.GeoDataFrame(geometry=[point], crs="EPSG:4326")
-                                            point_utm = point_gdf.to_crs(utm_crs).geometry.iloc[0]
+                                            point_gdf = gpd.GeoDataFrame(
+                                                geometry=[point], crs="EPSG:4326"
+                                            )
+                                            point_utm = point_gdf.to_crs(
+                                                utm_crs
+                                            ).geometry.iloc[0]
 
                                             # Calculate actual distance in meters from start of segment
-                                            segment_gdf = gpd.GeoDataFrame(geometry=[segment], crs="EPSG:4326")
-                                            segment_utm = segment_gdf.to_crs(utm_crs).geometry.iloc[0]
+                                            segment_gdf = gpd.GeoDataFrame(
+                                                geometry=[segment], crs="EPSG:4326"
+                                            )
+                                            segment_utm = segment_gdf.to_crs(
+                                                utm_crs
+                                            ).geometry.iloc[0]
 
                                             # Store the point with its distance along the route
-                                            segment_start_dist = line_utm.project(Point(segment_utm.coords[0]))
-                                            point_dist = segment_start_dist + segment_utm.project(point_utm)
-                                            osm_points.append((point_dist, (float(pt[0]), float(pt[1]))))
+                                            segment_start_dist = line_utm.project(
+                                                Point(segment_utm.coords[0])
+                                            )
+                                            point_dist = (
+                                                segment_start_dist
+                                                + segment_utm.project(point_utm)
+                                            )
+                                            osm_points.append(
+                                                (
+                                                    point_dist,
+                                                    (float(pt[0]), float(pt[1])),
+                                                )
+                                            )
                 except Exception as e:
                     print(f"Error processing OSM roads: {e}")
                     # Continue without OSM points
@@ -851,7 +915,9 @@ class RallyGeoTools:
                     point_wgs84 = point_gdf.to_crs("EPSG:4326").geometry.iloc[0]
 
                     # Store point with distance
-                    regular_points.append((distance, (float(point_wgs84.x), float(point_wgs84.y))))
+                    regular_points.append(
+                        (distance, (float(point_wgs84.x), float(point_wgs84.y)))
+                    )
             except Exception as e:
                 print(f"Error generating regular points: {e}")
                 # Continue with whatever points we have
@@ -890,7 +956,9 @@ class RallyGeoTools:
 
             # Ensure we have at least 2 points for a valid LineString
             if len(all_points) < 2:
-                print("Not enough valid points to create LineString, returning original line")
+                print(
+                    "Not enough valid points to create LineString, returning original line"
+                )
                 return line
 
             # Create enhanced LineString
@@ -905,23 +973,32 @@ class RallyGeoTools:
             if route_simplify_tolerance is not None:
                 try:
                     # Simplify first
-                    simplified = enhanced_line.simplify(route_simplify_tolerance, preserve_topology=True)
+                    simplified = enhanced_line.simplify(
+                        route_simplify_tolerance, preserve_topology=True
+                    )
 
                     # Get simplified coords
                     simplified_coords = list(simplified.coords)
 
                     # Ensure all original points are included
-                    final_coords = list(simplified_coords)  # Start with simplified points
+                    final_coords = list(
+                        simplified_coords
+                    )  # Start with simplified points
 
                     for orig_pt in original_points:
                         # Check if original point is already in simplified coords
-                        if any(np.allclose([orig_pt[0], orig_pt[1]], [sc[0], sc[1]]) for sc in simplified_coords):
+                        if any(
+                            np.allclose([orig_pt[0], orig_pt[1]], [sc[0], sc[1]])
+                            for sc in simplified_coords
+                        ):
                             continue
 
                         # Find where to insert this original point
                         inserted = False
                         for i in range(len(simplified_coords) - 1):
-                            segment = LineString([simplified_coords[i], simplified_coords[i + 1]])
+                            segment = LineString(
+                                [simplified_coords[i], simplified_coords[i + 1]]
+                            )
                             if segment.distance(Point(orig_pt)) < buffer_deg:
                                 # Insert at appropriate position
                                 final_coords.insert(i + 1, orig_pt)
@@ -962,7 +1039,9 @@ class RallyGeoTools:
                     else:
                         roads = None
 
-                    enhanced_line = enhance_line_with_regular_points(geom, point_spacing_meters, roads, buffer_deg)
+                    enhanced_line = enhance_line_with_regular_points(
+                        geom, point_spacing_meters, roads, buffer_deg
+                    )
                     enhanced_geometries.append(enhanced_line)
                 elif geom.geom_type == "MultiLineString":
                     # Process each part of the MultiLineString
@@ -973,7 +1052,9 @@ class RallyGeoTools:
                         else:
                             roads = None
 
-                        enhanced_part = enhance_line_with_regular_points(part, point_spacing_meters, roads, buffer_deg)
+                        enhanced_part = enhance_line_with_regular_points(
+                            part, point_spacing_meters, roads, buffer_deg
+                        )
                         enhanced_parts.append(enhanced_part)
                     # Keep it as a MultiLineString
                     enhanced_geometries.append(MultiLineString(enhanced_parts))
@@ -994,7 +1075,6 @@ class RallyGeoTools:
 
         return result
 
-
     def smooth_geojson_route(self, route_input, max_distance_meters=10):
         """
         Smooths a route by adding interpolated points so that no two consecutive points
@@ -1011,7 +1091,6 @@ class RallyGeoTools:
         --------
         GeoDataFrame containing the smoothed route with the same CRS as input
         """
-
 
         def extract_coordinates(route_input):
             """Extract coordinates from various input formats"""
