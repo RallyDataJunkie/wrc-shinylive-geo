@@ -16,3 +16,4 @@ shapely
 geopandas
 geographiclib
 geopy
+osmnx
