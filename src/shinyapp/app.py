@@ -2,10 +2,12 @@ from wrcapi_rallydj.data_api import WRCDataAPIClient
 from shiny.express import ui, input
 from shiny import render, reactive
 from shinywidgets import render_widget
-import requests
+
 from pandas import DataFrame
-from ipyleaflet import Map, Marker, Popup
-from ipywidgets import HTML
+from ipyleaflet import Map, Marker, DivIcon
+
+from requests_cache import CachedSession
+session = CachedSession(expire_after=5)
 
 wrcapi = WRCDataAPIClient(usegeo=True)
 
@@ -109,39 +111,6 @@ def update_stages_select():
 # def show_live_data():
 #    live_data = car_getdata()
 #    return render.DataGrid(live_data)
-
-# Map rendering function using ipyleaflet
-@render_widget
-def show_map():
-    def add_marker(row, m):
-        # Create marker
-        marker = Marker(location=(row["lat"], row["lon"]))#, draggable=False)
-        # Add a popup with the name that opens by default
-        # message = HTML()
-        # message.value = f"<b>{row['name']}</b>"
-        # marker.popup = Popup(
-        #    location=marker.location,
-        #    child=message,
-        # )
-
-        # Add marker to map
-        m.add_layer(marker)
-
-    # Get the latest data
-    df = car_getdata()
-
-    # Create a base map centered on the average location
-    center_lat = df["lat"].mean()
-    center_lon = df["lon"].mean()
-    m = Map(center=(center_lat, center_lon), zoom=9)
-    # Add markers for each point in the data
-    # Add markers to map
-    df.apply(lambda row: add_marker(row, m), axis=1)
-
-    m.fit_bounds(
-        [[df["lat"].min(), df["lon"].min()], [df["lat"].max(), df["lon"].max()]]
-    )
-    return m
 
 
 with ui.accordion(open=False):
@@ -251,12 +220,79 @@ with ui.accordion(open=False):
 ## LIVE DATA
 
 def get_data_feed():
-    return requests.get(
+    # If we are running this in a central server, multiuser context, does this let us be nice?
+    json = session.get(
         "https://webappsdata.wrc.com/srv/wrc/json/api/liveservice/getData?timeout=5000"
     ).json()["_entries"]
+    return json
 
 
 @reactive.poll(get_data_feed, 5.1)
+@reactive.event(input.live_map_accordion)
 def car_getdata():
-    json_data = get_data_feed()
-    return DataFrame(json_data)
+    return DataFrame(get_data_feed())
+
+
+with ui.accordion(open=False, id="live_map_accordion"):
+
+    with ui.accordion_panel("Live Map"):
+
+        ui.input_checkbox(
+            "pause_live_map",
+            "Pause live map updates",
+            False,
+        )
+
+        # Map rendering function using ipyleaflet
+        @render_widget
+        @reactive.event(input.pause_live_map, car_getdata)
+        def show_map():
+            def add_marker(row, m):
+                # Create marker
+                custom_icon = DivIcon(
+                    html=f'<div style="background-color:rgba(51, 136, 255, 0.7); display:inline-block; padding:2px 5px; color:white; font-weight:bold; border-radius:3px; border:none; box-shadow:none;">{row["name"]}</div>',
+                    className="",  # Empty string removes the default leaflet-div-icon class which has styling
+                    icon_size=[0, 0],  # Set icon size to zero
+                    icon_anchor=[0, 0],  # Adjust anchor point
+                    bgcolor="transparent",  # Ensure background is transparent
+                    border_color="transparent",
+                )
+                # DivIcon(
+                #    html=f'<div style="background-color:#3388ff; width:30px; height:30px; border-radius:50%; display:flex; justify-content:center; align-items:center; color:white; font-weight:bold;">{row["name"]}</div>',
+                #    icon_size=(30, 30),
+                #    icon_anchor=(15, 15),
+                # )
+                marker = Marker(
+                    location=(row["lat"], row["lon"]), icon=custom_icon) # , draggable=False)
+                # Add a popup with the name that opens by default
+                # message = HTML()
+                # message.value = f"<b>{row['name']}</b>"
+                # marker.popup = Popup(
+                #    location=marker.location,
+                #    child=message,
+                # )
+
+                # Add marker to map
+                m.add_layer(marker)
+
+            # Get the latest data
+            # df = car_getdata()
+            if input.pause_live_map():
+                with reactive.isolate():
+                    df = car_getdata()
+            else:
+                # Get the latest data
+                df = car_getdata()
+
+            # Create a base map centered on the average location
+            center_lat = df["lat"].mean()
+            center_lon = df["lon"].mean()
+            m = Map(center=(center_lat, center_lon), zoom=9)
+            # Add markers for each point in the data
+            # Add markers to map
+            df.apply(lambda row: add_marker(row, m), axis=1)
+
+            m.fit_bounds(
+                [[df["lat"].min(), df["lon"].min()], [df["lat"].max(), df["lon"].max()]]
+            )
+            return m
