@@ -36,7 +36,15 @@ class RallyGeoTools:
         def fix_encoding(text):
             if isinstance(text, str):
                 try:
+                    # First attempt: handle UTF-8 encoded as latin1
                     return text.encode("latin1").decode("utf-8")
+                except UnicodeEncodeError:
+                    # This handles characters that can't be encoded in latin1
+                    try:
+                        # Try a different approach - maybe text is already correct UTF-8
+                        return text
+                    except Exception:
+                        return text  # Return as-is if all fails
                 except UnicodeDecodeError:
                     return text  # Return as-is if decoding fails
             return text
@@ -112,6 +120,9 @@ class RallyGeoTools:
         zoom=9,
         buffer_percentage=0.05,
     ):
+        if stages_gdf.empty:
+            return
+
         # TO DO - we need to handle/ignore duplicate stage routes
         if stages is not None:
             stages = {stages} if isinstance(stages, str) else set(stages)
@@ -148,13 +159,15 @@ class RallyGeoTools:
 
         if labelcoords:
             for label, coords in labelcoords:
-                icon_text = f'<div style="background-color:rgba(50, 50, 50, 0.7); display:inline-block; padding:4px 8px; color:white; font-weight:bold; border-radius:3px;">{label}</div>'
-                icon = DivIcon(
-                    html=icon_text,
-                    icon_anchor=[0, 0],
-                )
-                marker = Marker(location=(coords[1], coords[0]), icon=icon)
-                m.add_layer(marker)
+                if coords:
+                    icon_text = f'<div style="background-color:rgba(50, 50, 50, 0.7); display:inline-block; padding:4px 8px; color:white; font-weight:bold; border-radius:3px;">{label}</div>'
+                    icon = DivIcon(
+                        html=icon_text,
+                        icon_anchor=[0, 0],
+                    )
+
+                    marker = Marker(location=(coords[1], coords[0]), icon=icon)
+                    m.add_layer(marker)
 
         if poi_gdf is not None:
             # desription (sic)
@@ -661,8 +674,13 @@ class RallyGeoTools:
         )
         return m
 
+    def estimate_utm_crs(self, gdf=None):
+        # XX DO estimate_utm_crs() for various obects
+        if gdf is not None and not gdf.empty:
+            return gdf.estimate_utm_crs()
+
     # Via claude.ai
-    def calculate_route_distance(self, gdf, row_index, lat, lon):
+    def calculate_route_distance(self, gdf, row_index, lat, lon, utm_crs=None):
         """
         Calculate distance along a route using automatically estimated UTM CRS
 
@@ -686,12 +704,13 @@ class RallyGeoTools:
         if gdf.crs is None or gdf.crs.name == "undefined":
             gdf = gdf.set_crs("EPSG:4326")
 
-        # Create point in the same CRS as the dataframe
-        point = gpd.GeoDataFrame(geometry=[Point(lon, lat)], crs="EPSG:4326")
+        if not utm_crs:
+            # Create point in the same CRS as the dataframe
+            point = gpd.GeoDataFrame(geometry=[Point(lon, lat)], crs="EPSG:4326")
 
-        # Automatically estimate the best UTM CRS for the point
-        utm_crs = point.estimate_utm_crs()
-        # print(f"Estimated UTM CRS: {utm_crs}")
+            # Automatically estimate the best UTM CRS for the point
+            utm_crs = point.estimate_utm_crs()
+            # print(f"Estimated UTM CRS: {utm_crs}")
 
         # Project both route and point to the estimated UTM CRS
         projected_gdf = gdf.to_crs(utm_crs)
@@ -723,6 +742,47 @@ class RallyGeoTools:
         except Exception as e:
             return {"error": str(e), "latitude": lat, "longitude": lon}
 
+    def enrich_df_with_route_distances(self, points_df, routes_gdf, route_index):
+        """
+        Enrich a dataframe containing lat/lon points with distances along a specified route
+
+        Parameters:
+        -----------
+        points_df : DataFrame
+            DataFrame containing latitude and longitude columns
+        routes_gdf : GeoDataFrame
+            GeoDataFrame containing the routes
+        route_index : int
+            Index of the specific route to calculate distances against
+
+        Returns:
+        --------
+        DataFrame
+            Original dataframe with additional distance columns
+        """
+        # Make a copy to avoid modifying the original
+        enriched_df = points_df.copy()
+
+        # Create a function that applies calculate_route_distance to each row
+        def calculate_distance_for_row(row):
+            result = self.calculate_route_distance(
+                routes_gdf, route_index, row["lat"], row["lon"]
+            )
+            return result
+
+        # Apply the function to each row
+        distance_results = enriched_df.apply(calculate_distance_for_row, axis=1)
+
+        # Extract the distance values and add as new columns
+        enriched_df["dist_along_route"] = distance_results.apply(
+            lambda x: x.get("distance_along_route_meters", None)
+        )
+        # enriched_df['total_route_length'] = distance_results.apply(lambda x: x.get('total_route_length_meters', None))
+        enriched_df["percent_along_route"] = distance_results.apply(
+            lambda x: x.get("percent_along_route", None)
+        )
+
+        return enriched_df
 
     def enhance_route_resolution_osm(
         self,
@@ -793,7 +853,9 @@ class RallyGeoTools:
                 return None
 
             # Find the closest road
-            closest_road_idx = nearest_roads.distance(point_utm.geometry.iloc[0]).idxmin()
+            closest_road_idx = nearest_roads.distance(
+                point_utm.geometry.iloc[0]
+            ).idxmin()
             closest_road = nearest_roads.geometry.iloc[closest_road_idx]
 
             # Find closest point on that road
@@ -807,7 +869,9 @@ class RallyGeoTools:
                 closest_point_utm = None
 
                 for part in closest_road.geoms:
-                    proj_point = part.interpolate(part.project(point_utm.geometry.iloc[0]))
+                    proj_point = part.interpolate(
+                        part.project(point_utm.geometry.iloc[0])
+                    )
                     dist = point_utm.geometry.iloc[0].distance(proj_point)
 
                     if dist < min_dist:
@@ -919,7 +983,9 @@ class RallyGeoTools:
                     # For each segment in the original route
                     for i in range(len(original_points) - 1):
                         # Create a LineString for this segment
-                        segment = LineString([original_points[i], original_points[i + 1]])
+                        segment = LineString(
+                            [original_points[i], original_points[i + 1]]
+                        )
                         segment_buffer = segment.buffer(buffer_deg)
 
                         # Find OSM roads that might provide additional detail for this segment
@@ -931,7 +997,9 @@ class RallyGeoTools:
                                     point = Point(pt)
                                     if segment_buffer.contains(point):
                                         # Calculate position along the segment (0-1)
-                                        position = segment.project(point, normalized=True)
+                                        position = segment.project(
+                                            point, normalized=True
+                                        )
                                         if (
                                             0 < position < 1
                                         ):  # Only add points between our original points
@@ -960,7 +1028,10 @@ class RallyGeoTools:
                                                 + segment_utm.project(point_utm)
                                             )
                                             osm_points.append(
-                                                (point_dist, (float(pt[0]), float(pt[1])))
+                                                (
+                                                    point_dist,
+                                                    (float(pt[0]), float(pt[1])),
+                                                )
                                             )
                 except Exception as e:
                     print(f"Error processing OSM roads: {e}")
@@ -1058,7 +1129,9 @@ class RallyGeoTools:
                     simplified_coords = list(simplified.coords)
 
                     # Ensure all original points are included
-                    final_coords = list(simplified_coords)  # Start with simplified points
+                    final_coords = list(
+                        simplified_coords
+                    )  # Start with simplified points
 
                     for orig_pt in original_points:
                         # Check if original point is already in simplified coords
